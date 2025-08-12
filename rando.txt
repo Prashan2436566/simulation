@@ -1,0 +1,3 @@
+create -> python -m venv venv  
+permssions -> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+activate -> .\venv\Scripts\activate

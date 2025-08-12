@@ -1,0 +1,188 @@
+from mesa import Model
+from mesa.space import MultiGrid
+from mesa.time import RandomActivation
+from .agent import IdeologyAgent, ResourcePatch, EnergyHub
+import random
+from mesa.visualization.modules import TextElement
+
+class LegendElement(TextElement):
+    def render(self, model):
+        return """
+        <div style='font-size:14px;'>
+            <b>Legend:</b><br>
+            <span style='color:green;'>🟩 Renewable Resource</span><br>
+            <span style='color:gray;'>⬜ Non-renewable Resource</span><br>
+            <span style='color:blue;'>🔵 Capitalist Agent</span><br>
+            <span style='color:teal;'>🟢 Teal Capitalist Agent</span><br>
+            <span style='color:orange;'>🟠 Orange Socialist Agent</span><br>
+            <span style='color:brown;'>🟤 Yellow Socialist Agent</span><br>
+            <span>🟧 S: Energy Hub (on renewable)</span><br>
+            <span style='color:red;'>🔴 Pollution Indicator (number shows local pollution level)</span>
+        </div>
+        """
+
+class StatsElement(TextElement):
+    def render(self, model):
+        agents = [a for a in model.schedule.agents if hasattr(a, "energy")]
+        n_agents = len(agents)
+        avg_e = (sum(a.energy for a in agents) / n_agents) if n_agents else 0
+        # NEW: aggregate scar level across renewable patches
+        scars = 0.0
+        for x in range(model.width):
+            for y in range(model.height):
+                for obj in model.grid.get_cell_list_contents((x, y)):
+                    if isinstance(obj, ResourcePatch) and obj.resource_type == "renewable":
+                        scars += getattr(obj, "scar_level", 0.0)
+        return f"""
+        <div style='font-size:14px;'>
+            <b>Stats:</b><br>
+            Total Agents Created: {model.total_agents_created}<br>
+            Living Agents: {len(agents)}<br>
+            Total Resources Mined (raw): {model.total_mined_energy:.2f}<br>
+            Community Pool: {model.community_pool:.2f} (redistribute every {model.redistribute_every} steps)<br>
+            Avg Energy: {avg_e:.2f}<br>
+            Total Scar Level: {scars:.2f}
+        </div>
+        """
+
+class IdeologyModel(Model):
+    def __init__(
+        self,
+        width: int = 30,
+        height: int = 30,
+        num_agents: int = 15,
+        renewables_regenerate: bool = True,
+        ideology: str = "capitalist",
+        policy_enabled: bool = False,
+        # Economics
+        cost_renewable_setup: float = 5.0,
+        cost_extract_renewable: float = 1.0,
+        cost_extract_nonrenewable: float = 2.0,
+        yield_per_mine_renewable: int = 4,
+        yield_per_mine_nonrenewable: int = 6,
+        # Overuse dynamics
+        renewable_cooldown_steps: int = 5,
+        renewable_overuse_trigger: int = 6,
+        renewable_fatigue_decay: int = 1,
+    ) -> None:
+        self.current_id = 0
+        self.grid = MultiGrid(width, height, torus=True)
+        self.schedule = RandomActivation(self)
+        self.running = True
+        self.width = width
+        self.height = height
+        self.renewables_regenerate = renewables_regenerate
+        self.ideology = ideology
+        self.policy_enabled = policy_enabled
+
+        # Economics
+        self.cost_renewable_setup = cost_renewable_setup
+        self.cost_extract_renewable = cost_extract_renewable
+        self.cost_extract_nonrenewable = cost_extract_nonrenewable
+        self.yield_per_mine_renewable = yield_per_mine_renewable
+        self.yield_per_mine_nonrenewable = yield_per_mine_nonrenewable
+
+        # Renewable overuse dynamics
+        self.renewable_cooldown_steps = renewable_cooldown_steps
+        self.renewable_overuse_trigger = renewable_overuse_trigger
+        self.renewable_fatigue_decay = renewable_fatigue_decay
+
+        self.total_agents_created = 0
+        self.total_mined_energy = 0
+
+        self.nonrenewable_locations: list[tuple[int, int]] = []
+        self.renewable_locations: list[tuple[int, int]] = []
+
+        # --- Social policy knobs (existing) ---
+        self.community_pool = 0.0
+        self.tithe_rate = 0.30           # % of net mining gains to pool
+        self.basic_income = 0.10         # paid every step to everyone
+        self.redistribute_every = 5       # cadence (steps)
+        self.share_floor = 6.0            # poverty line for payouts
+        self._since_last_redistribute = 0
+
+        # --- NEW: scar mechanics (local environmental degradation) ---
+        self.scar_radius = 1                 # neighborhood radius to scar when mining nonrenewables
+        self.scar_increase_per_unit = 0.15   # scar bump per unit extracted (applied to nearby renewables)
+        self.scar_decay = 0.02               # scar decays by this amount each step
+        self.scar_regen_alpha = 0.5          # how strongly scars slow renewable regen
+        self.scar_max = 3.0                  # cap on scar level at any tile
+        self.scar_collapse_threshold = 1  # if a renewable's scar_level >= this, the patch collapses (is removed)
+
+        # --- Environmental policy knobs (used by capitalist_green) ---
+        self.carbon_tax_per_unit = 0.5        # tax applied per unit of nonrenewable extracted
+        self.renewable_subsidy_per_unit = 0.2 # subsidy per unit of renewable extracted
+        self.scar_avoid_alpha = 0.4           # how much high scar lowers a green score
+
+        self.carbon_tax_per_unit = 0.5
+        self.renewable_subsidy_per_unit = 0.2
+        self.scar_avoid_alpha = 0.4
+
+
+
+
+        self._scatter_resources("renewable", 100)
+        self._scatter_resources("nonrenewable", 100)
+
+        for _ in range(num_agents):
+            agent = IdeologyAgent(self.next_id(), self, ideology)
+            x = self.random.randrange(self.grid.width)
+            y = self.random.randrange(self.grid.height)
+            self.grid.place_agent(agent, (x, y))
+            self.schedule.add(agent)
+
+    def _scatter_resources(self, resource_type: str, num_patches: int) -> None:
+        placed = 0
+        while placed < num_patches:
+            x = random.randint(0, self.width - 1)
+            y = random.randint(0, self.height - 1)
+            if not any(isinstance(obj, ResourcePatch) for obj in self.grid.get_cell_list_contents((x, y))):
+                regen = 1 if resource_type == "renewable" and self.renewables_regenerate else 0
+                patch = ResourcePatch(self.next_id(), self, resource_type, max_capacity=5, regen_rate=regen)
+                self.grid.place_agent(patch, (x, y))
+                self.schedule.add(patch)
+                if resource_type == "nonrenewable":
+                    self.nonrenewable_locations.append((x, y))
+                else:
+                    self.renewable_locations.append((x, y))
+                placed += 1
+
+    # --- Pool redistribution (existing) ---
+    def redistribute_pool(self):
+        agents = [a for a in self.schedule.agents if hasattr(a, "energy")]
+        needy = [a for a in agents if a.energy < self.share_floor]
+        if not needy or self.community_pool <= 0:
+            return
+        deficits = [self.share_floor - a.energy for a in needy]
+        total_deficit = sum(deficits)
+        if total_deficit <= 0:
+            return
+        pool = self.community_pool
+        for a, d in zip(needy, deficits):
+            give = pool * (d / total_deficit)
+            a.energy += give
+            self.community_pool -= give
+
+    def step(self) -> None:
+        # Everyone gets a basic income
+        for a in list(self.schedule.agents):
+            if hasattr(a, "energy"):
+                a.energy += self.basic_income
+
+        # Periodic redistribution from community pool
+        self._since_last_redistribute += 1
+        if self._since_last_redistribute >= self.redistribute_every:
+            self.redistribute_pool()
+            self._since_last_redistribute = 0
+
+        self.schedule.step()
+
+    # utility to get a fresh id
+    def next_id(self) -> int:
+        self.current_id += 1
+        return self.current_id
+    
+    def average_energy(self) -> float:
+        agents = [a.energy for a in self.schedule.agents if hasattr(a, "energy")]
+        return (sum(agents) / len(agents)) if agents else 0.0
+
