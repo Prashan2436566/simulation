@@ -1,6 +1,6 @@
 from server.server import server
 from server.server import model_params
-
+#
 # ideology
 SELECTED_IDEOLOGY = "capitalist" 
 #SELECTED_IDEOLOGY = "green_capitalist"
