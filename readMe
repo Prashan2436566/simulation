@@ -107,3 +107,157 @@ Could be implemented as:
 self.consider_research_innovation() → modifies agent's future performance.
 
 self.consider_infrastructure_building() → places special infrastructure (like EnergyHub) with global/local benefits.
+
+
+
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////
+ECONOMIC CONSTANTS (MINING & COSTS)
+
+cost_renewable_setup = 5.0 → One-time cost to start mining a renewable patch. High values discourage renewables unless payoff is long-term.
+
+cost_extract_renewable = 1.0 → Cost per renewable extraction. Higher costs mean renewables need to be closer to be worthwhile.
+
+cost_extract_nonrenewable = 2.0 → Cost per non-renewable extraction. Makes far-away non-renewables less attractive.
+
+yield_per_mine_renewable = 4 → Units of energy gained per renewable mine.
+
+yield_per_mine_nonrenewable = 6 → Units of energy gained per non-renewable mine.
+
+basic_income = 0.10 → Passive income per step; helps poor agents survive.
+
+tithe_rate = 0.30 → Percentage of gains sent to the community pool (for socialist systems).
+
+share_floor = 6.0 → Minimum energy agents should have before redistribution kicks in.
+
+RENEWABLE REGENERATION & OVERUSE
+
+renewables_regenerate = True → If False, renewables act like non-renewables (finite).
+
+renewable_cooldown_steps = 5 → Steps a renewable patch must rest after overuse.
+
+renewable_overuse_trigger = 6 → If mined this many times quickly, patch enters cooldown.
+
+renewable_fatigue_decay = 1 → Recovery rate from overuse cooldown.
+
+scar_radius = 1 → Distance around a mined non-renewable that gets environmental damage.
+
+scar_increase_per_unit = 0.15 → How much scar level increases per non-renewable unit mined.
+
+scar_decay = 0.02 → How much scar level reduces per step naturally.
+
+scar_regen_alpha = 0.5 → How strongly scars slow renewable regeneration.
+
+scar_max = 3.0 → Maximum scar level a tile can have.
+
+scar_collapse_threshold = 1 → If scar level ≥ this, renewable patch collapses.
+
+POLICY / ENVIRONMENTAL FACTORS
+
+policy_enabled = False → If True, environmental and social policies apply.
+
+carbon_tax_per_unit = 0.5 → Tax on each non-renewable unit extracted (affects green systems more).
+
+renewable_subsidy_per_unit = 0.2 → Bonus for renewable extraction (makes them more attractive).
+
+scar_avoid_alpha = 0.4 → How much scarred areas are avoided by “green” ideologies.
+
+BEHAVIOURAL / SCHEDULING
+
+redistribute_every = 5 → Steps between redistribution events.
+
+num_agents = 15 → Number of starting agents; affects competition for resources.
+
+width, height = 30 × 30 → Grid size; impacts travel distance costs.
+//////////////////////////////////////////////////////////////////////////////////////////////////////
+CAPITALIST — LOGIC
+
+Each step: if already mining, finish after a short counter and get net = yield − op_cost.
+
+If not mining:
+
+Find the closest non-renewable patch with resources (skip if an agent is already standing there).
+
+If no good non-renewable (or it’s far), pick the closest renewable with resources (also avoid crowded tiles).
+
+Movement: move 1–2 cells toward target (2 if energy > 15).
+
+When standing on target: start a 3-tick mining action.
+
+Renewables need a one-time setup cost before first extraction on that patch.
+
+Depleted non-renewables are removed from the grid.
+
+Pays baseline upkeep each step; if energy ≤ 0 the agent dies (removed).
+
+SOCIALIST — LOGIC
+
+If already mining: finish mining; on renewables with an Energy Hub, get: lower op_cost (−1) and +1 yield.
+
+After a positive net gain:
+
+Tithe: send a fraction (tithe_rate) of net to the community pool.
+
+Wealth cap: if energy > cap, skim excess to the pool.
+
+If not mining, choose target based on average colony energy:
+
+If avg_energy > 5 → prefer renewable.
+
+Else → prefer non-renewable.
+
+Emergency rule: if own energy < emergency_floor, just go to the nearest available resource (renewable or non-renewable).
+
+When standing on a renewable without a hub, try co-building an Energy Hub: two socialists must be co-located and contribute for ~2 steps; once built, it benefits renewable mining on that tile.
+
+Also performs local redistribution: if energy is well above min_keep, share a fraction with neighbors below a help_threshold.
+
+Baseline upkeep and death rule as above.
+
+GREEN CAPITALIST — LOGIC
+
+If already mining: finish and apply policy adjustments:
+
+Renewables: get a subsidy per unit mined → net increases.
+
+Non-renewables: pay a carbon tax per unit mined → net decreases; tax can flow to the community pool.
+
+If not mining, score both resource types and pick the best:
+
+Estimated net = (base_yield − op_cost) + (subsidy or −tax) − scar_penalty (penalize renewable tiles with high local scar).
+
+Divide by distance+1 to prefer closer patches and avoid heavy travel.
+
+Skip tiles with agents already standing there (crowding avoidance).
+
+Movement: 1–2 cells toward best-scored patch; start a 3-tick mine on arrival.
+
+Renewables still need the one-time setup cost before first extraction.
+
+Depleted non-renewables are removed.
+
+Baseline upkeep and death rule as above.
+
+GREEN SOCIALIST — LOGIC
+
+If already mining: finish mining with socialist rules (tithe + wealth cap) and apply green policy like above:
+
+Renewables: +subsidy per unit.
+
+Non-renewables: −tax per unit.
+
+On renewables with a hub: still get hub benefits (−1 op_cost, +1 yield).
+
+If not mining, pick target using a two-stage rule:
+
+Socialist “safety” rule:
+
+If avg_energy > 5 → prefer renewable; if avg_energy ≤ 5 → prefer non-renewable.
+
+Among allowed type(s), choose by green score: (base_yield − op_cost) + (subsidy or −tax) − scar_penalty, adjusted by distance.
+
+On arriving at a renewable without a hub: attempt co-build hub with another socialist-type on the same tile.
+
+Performs local redistribution when rich (share with nearby low-energy agents).
+
+Baseline upkeep and death rule as above.
