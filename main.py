@@ -1,6 +1,14 @@
 from server.server import server
 from server.server import model_params
-#
+"""
+Things to add
+
+adaptive
+procreate
+cluster of resources
+shocks
+r&d/ innovation
+"""
 # ideology
 SELECTED_IDEOLOGY = "capitalist" 
 #SELECTED_IDEOLOGY = "green_capitalist"
