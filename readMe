@@ -1,0 +1,109 @@
+1. Environment
+Your environment is a 30×30 toroidal grid (MultiGrid), meaning agents can wrap around edges.
+
+Resource patches
+
+Renewable:
+
+Regenerate over time (regen_rate) if renewables_regenerate is enabled.
+
+Can be overused — overuse triggers a cooldown and environmental scar effects that slow regeneration.
+
+Collapses (is removed) if scar level passes a threshold.
+
+Non-renewable:
+
+Higher yield than renewables but no regeneration.
+
+Mining increases environmental scars in nearby renewables.
+
+Scar system (environmental degradation):
+
+Mining non-renewables increases scar_level in surrounding renewables.
+
+Scar reduces renewable regeneration (scar_regen_alpha).
+
+Scar decays slowly over time but can lead to resource collapse.
+
+Infrastructure sites
+
+Placeholder for future R&D/infrastructure mechanics (e.g., mining hubs).
+
+2. Agent Types
+All agents are instances of IdeologyAgent with an ideology label determining behaviour:
+
+"capitalist" — prioritise highest yield minus cost, often choose non-renewables first.
+
+"socialist" — share resources via the community_pool more readily, may mine evenly.
+
+"green_capitalist" — like capitalist but factor in environmental costs (scar_avoid_alpha) and receive subsidies for renewables.
+
+"green_socialist" — like socialist but with environmental awareness.
+
+"communist" — likely resource sharing across all, centralised control (depends on your implementation).
+
+"adaptive" — can change behaviour based on conditions (if implemented).
+
+3. Economic & Social Systems
+Energy as currency
+
+Agents start with some energy and spend it to mine resources.
+
+Mining yield differs by resource type (yield_per_mine_...) and costs (cost_extract_...).
+
+Community Pool (redistribution mechanism for socialist-like systems)
+
+Funded by tithe rate (tithe_rate) from mined resources.
+
+Redistributed every redistribute_every steps to agents below a share_floor.
+
+Basic income (basic_income) given to all agents each step.
+
+Carbon Tax & Renewable Subsidy (environmental policy)
+
+Carbon tax applied per unit of non-renewable extracted.
+
+Renewable subsidy per unit of renewable extracted.
+
+Primarily for “green” ideologies.
+
+4. Data Collection & Graphs
+The model tracks:
+
+Economic metrics: AvgEnergy, CommunityPool, AgentsAlive
+
+Environmental metrics: TotalScar, Renewables, NonRenewables, InfrastructureSites
+
+Equality metric: GiniEnergy
+
+Mining outputs: MinedRenewable, MinedNonrenewable
+
+Your server.py shows live charts for:
+
+Economy (energy levels & pool size)
+
+Environment (scar & resource counts)
+
+Mining rates (renewable vs non-renewable extracted per step)
+
+Equality (Gini coefficient over time)
+
+Optional ideology population chart (if enabled in model.py)
+
+5. Possible R&D / Infrastructure Features
+If you add R&D / infrastructure decisions:
+
+Agents could choose to invest in:
+
+Renewable tech — increase regen rate or yield.
+
+Extraction tech — reduce cost per mine.
+
+Pollution control — lower scar effects.
+
+Exploration tech — improve efficiency finding resources.
+Could be implemented as:
+
+self.consider_research_innovation() → modifies agent's future performance.
+
+self.consider_infrastructure_building() → places special infrastructure (like EnergyHub) with global/local benefits.
