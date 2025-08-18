@@ -1,0 +1,19 @@
+Yield is the amount of energy or resources gained per mining action on a patch. For example, a renewable patch might give 3 energy units, while a non-renewable might give 5 units. Yield is the reward side of an agent’s decision.
+
+Setup cost is a one-time investment paid by an agent to start using a renewable patch. This models the fact that renewables need infrastructure like solar panels or turbines. Once setup is paid, the agent only pays the operational cost per mining step. Non-renewables usually don’t have a setup cost.
+
+Operational cost is the recurring cost per step of mining a patch. Non-renewables usually have higher operational costs, while renewables have lower costs after setup is paid.
+
+Desired or desired resource is the target patch chosen by an agent each turn. The agent’s logic picks the patch by scoring all visible options based on yield, costs, distance, and sometimes taxes or subsidies. Once the desired patch is chosen, the agent moves toward it and tries to mine.
+
+Distance is used as a penalty in the scoring formula. Patches that are further away are less attractive unless they have much higher yield.
+
+Tithe rate applies to socialist or communist agents. A percentage of each agent’s mined energy goes into a shared pool. This pool is redistributed to agents with low energy.
+
+Wealth cap is another socialist or communist policy. It limits how much energy an individual can hold. Extra energy above the cap is moved into the shared pool.
+
+Subsidy is a bonus reward for renewable energy that applies to green agents. It makes renewable patches more attractive.
+
+Carbon tax is a penalty for non-renewable energy that applies to green agents. It reduces the score of non-renewables and makes them less attractive.
+
+Scar avoidance applies to green agents. If a renewable patch is heavily depleted or overused, its score is reduced, pushing agents to prefer healthier patches.
