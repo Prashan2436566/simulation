@@ -8,7 +8,7 @@ Desired or desired resource is the target patch chosen by an agent each turn. Th
 
 Distance is used as a penalty in the scoring formula. Patches that are further away are less attractive unless they have much higher yield.
 
-Tithe rate applies to socialist or communist agents. A percentage of each agent’s mined energy goes into a shared pool. This pool is redistributed to agents with low energy.
+Tithe rate applies to socialist agents. A percentage of each agent’s mined energy goes into a shared pool. This pool is redistributed to agents with low energy.
 
 Wealth cap is another socialist or communist policy. It limits how much energy an individual can hold. Extra energy above the cap is moved into the shared pool.
 
