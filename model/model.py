@@ -66,6 +66,9 @@ class IdeologyModel(Model):
         renewable_cooldown_steps: int = 5,
         renewable_overuse_trigger: int = 6,
         renewable_fatigue_decay: int = 1,
+
+        pool_floor: float = 10.0,
+
     ) -> None:
         self.current_id = 0
         self.grid = MultiGrid(width, height, torus=True)
@@ -76,6 +79,8 @@ class IdeologyModel(Model):
         self.renewables_regenerate = renewables_regenerate
         self.ideology = ideology
         self.policy_enabled = policy_enabled
+
+        self.pool_floor = pool_floor
 
         # Economics
         self.cost_renewable_setup = cost_renewable_setup
@@ -100,7 +105,7 @@ class IdeologyModel(Model):
         self.tithe_rate = 0.30           # % of net mining gains to pool
         self.basic_income = 0.10         # paid every step to everyone
         self.redistribute_every = 5       # cadence (steps)
-        self.share_floor = 6.0            # poverty line for payouts
+        self.share_floor = 20            # poverty line for payouts
         self._since_last_redistribute = 0
 
         # --- NEW: scar mechanics (local environmental degradation) ---

@@ -122,6 +122,9 @@ model_params = {
     "renewable_cooldown_steps": UserSettableParameter("slider", "Renewable cooldown steps", 5, 0, 20, 1),
     "renewable_overuse_trigger": UserSettableParameter("slider", "Overuse trigger (units)", 6, 1, 20, 1),
     "renewable_fatigue_decay": UserSettableParameter("slider", "Fatigue decay per step", 1, 0, 5, 1),
+
+    "pool_floor": UserSettableParameter("slider", "Give-to-Pool Floor", 10.0, 0.0, 30.0, 0.5),
+
 }
 
 server = ModularServer(

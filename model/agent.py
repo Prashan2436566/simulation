@@ -280,17 +280,23 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                    # ---- Tithe + wealth cap ----
-                    if net_gain > 0:
-                        tithe = self.model.tithe_rate * net_gain
-                        tithe = max(0.0, min(tithe, self.energy))
-                        self.energy -= tithe
-                        self.model.community_pool += tithe
+                    # ---- Safe tithe and skim using slider floor ----
+                    floor = getattr(self.model, "pool_floor", 10.0)
 
-                    if self.energy > self.energy_cap:
-                        skim = self.energy - self.energy_cap
-                        self.energy -= skim
-                        self.model.community_pool += skim
+                    if net_gain > 0 and self.energy > floor:
+                        tithe = self.model.tithe_rate * net_gain
+                        tithe = min(tithe, max(0.0, self.energy - floor))
+                        if tithe > 0:
+                            self.energy -= tithe
+                            self.model.community_pool += tithe
+
+                    safe_cap = max(self.energy_cap, floor)
+                    if self.energy > safe_cap:
+                        skim = max(0.0, self.energy - safe_cap)
+                        if skim > 0:
+                            self.energy -= skim
+                            self.model.community_pool += skim
+
 
                 self.mining = False
                 self.mining_target = None
@@ -460,17 +466,22 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                    # Redistribution logic
-                    if net_gain > 0:
-                        tithe = self.model.tithe_rate * net_gain
-                        tithe = max(0.0, min(tithe, self.energy))
-                        self.energy -= tithe
-                        self.model.community_pool += tithe
+                     # ---- Safe tithe and skim using slider floor ----
+                    floor = getattr(self.model, "pool_floor", 10.0)
 
-                    if self.energy > self.energy_cap:
-                        skim = self.energy - self.energy_cap
-                        self.energy -= skim
-                        self.model.community_pool += skim
+                    if net_gain > 0 and self.energy > floor:
+                        tithe = self.model.tithe_rate * net_gain
+                        tithe = min(tithe, max(0.0, self.energy - floor))
+                        if tithe > 0:
+                            self.energy -= tithe
+                            self.model.community_pool += tithe
+
+                    safe_cap = max(self.energy_cap, floor)
+                    if self.energy > safe_cap:
+                        skim = max(0.0, self.energy - safe_cap)
+                        if skim > 0:
+                            self.energy -= skim
+                            self.model.community_pool += skim
 
                 self.mining = False
                 self.mining_target = None
@@ -583,28 +594,37 @@ class IdeologyAgent(Agent):
         return best_pos, (best_dist if best_dist is not None else 10**9), best_patch
 
     def redistribute_to_neighbors(self):
-        surplus = max(0.0, self.energy - self.min_keep)
-        if surplus <= 0:
+        floor = getattr(self.model, "pool_floor", 10.0)
+        if self.energy <= floor:
             return
+
+        surplus = max(0.0, self.energy - floor)
         give_pool = self.share_fraction * surplus
+
         neighs = self.model.grid.get_neighborhood(self.pos, moore=True, include_center=False, radius=self.share_radius)
         needy = []
         for p in neighs:
             for a in self.model.grid.get_cell_list_contents([p]):
                 if isinstance(a, IdeologyAgent) and a is not self and a.energy < self.help_threshold:
                     needy.append(a)
-        if not needy:
+        if not needy or give_pool <= 0:
             return
+
         deficits = [self.help_threshold - a.energy for a in needy]
         total_def = sum(deficits)
         if total_def <= 0:
             return
+
         for a, d in zip(needy, deficits):
+            if self.energy <= floor:
+                break
             share_i = give_pool * (d / total_def)
+            share_i = min(share_i, max(0.0, self.energy - floor))
+            if share_i <= 0:
+                continue
             a.energy += share_i
             self.energy -= share_i
-            if self.energy <= self.min_keep:
-                break
+
 
     # --- movement helpers (kept from your file) ---
     def move_towards(self, target_pos, speed: int = 1) -> None:
