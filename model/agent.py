@@ -20,16 +20,21 @@ class ResourcePatch(Agent):
         self.cooldown_remaining = 0
         self.fatigue = 0
 
+        # Environmental scar
         self.scar_level: float = 0.0
 
+        # NEW: degradation / maintenance state (renewables only)
+        self.degraded: bool = False            # if True, cannot be mined until repaired
+        self.under_maintenance: bool = False   # an agent is currently repairing here
+        self.maintenance_progress: int = 0     # steps spent repairing
+
     def step(self) -> None:
-        # --- decay scars every tick ---
+        # decay scars every tick
         if self.scar_level > 0:
             self.scar_level = max(0.0, self.scar_level - self.model.scar_decay)
 
-        # NEW: collapse renewable patch if scar is too high
+        # collapse renewable if scar too high
         if self.resource_type == "renewable" and self.scar_level >= self.model.scar_collapse_threshold:
-            # remove self from grid & schedule, and from model's renewable_locations cache
             try:
                 self.model.grid.remove_agent(self)
             except Exception:
@@ -38,23 +43,23 @@ class ResourcePatch(Agent):
                 self.model.schedule.remove(self)
             except Exception:
                 pass
-            # keep the cache in sync
             try:
                 if hasattr(self.model, "renewable_locations") and self.pos in self.model.renewable_locations:
                     self.model.renewable_locations.remove(self.pos)
             except ValueError:
                 pass
-            return  # stop further processing; this patch is gone
+            return
 
+        # Normal renewable regen (disabled if degraded or under maintenance)
         if self.resource_type == "renewable":
             if self.fatigue > 0:
                 self.fatigue = max(0, self.fatigue - self.model.renewable_fatigue_decay)
-            if self.cooldown_remaining > 0:
+            if self.degraded or self.under_maintenance:
+                self.regen_rate = 0
+            elif self.cooldown_remaining > 0:
                 self.cooldown_remaining -= 1
                 self.regen_rate = 0
             else:
-                # Base regen, then apply scar penalty
-                # penalty factor = max(0, 1 - alpha * scar_level)
                 penalty = max(0.0, 1.0 - self.model.scar_regen_alpha * self.scar_level)
                 self.regen_rate = self.base_regen_rate * penalty
 
@@ -62,6 +67,10 @@ class ResourcePatch(Agent):
             self.amount = min(self.max_capacity, self.amount + self.regen_rate)
 
     def harvest(self, amount: int) -> int:
+        # Block mining if degraded or under maintenance
+        if self.resource_type == "renewable" and (self.degraded or self.under_maintenance):
+            return 0
+
         collected = min(self.amount, amount)
         self.amount -= collected
         self.model.total_mined_energy += collected
@@ -72,13 +81,13 @@ class ResourcePatch(Agent):
             else:
                 self.model._mined_nonrenewable_this_step += collected
 
-        # Renewable fatigue / cooldown as before
+        # Renewable fatigue / cooldown
         if self.resource_type == "renewable" and collected > 0:
             self.fatigue += collected
             if self.amount <= 0 or self.fatigue >= self.model.renewable_overuse_trigger:
                 self.cooldown_remaining = max(self.cooldown_remaining, self.model.renewable_cooldown_steps)
 
-        # --- NEW: nonrenewable spill -> scar nearby renewable tiles ---
+        # Nonrenewable spill -> scar nearby renewable tiles
         if self.resource_type == "nonrenewable" and collected > 0:
             radius = self.model.scar_radius
             bump = self.model.scar_increase_per_unit * collected
@@ -114,7 +123,7 @@ class IdeologyAgent(Agent):
         self.model.total_agents_created += 1
         self.renewable_setup_paid: set[int] = set()
 
-        # --- Socialist tuning (safe defaults even for non-socialists) ---
+        # Socialist tuning (safe defaults even for non-socialists)
         self.share_radius = 1
         self.share_fraction = 0.60
         self.min_keep = 8.0
@@ -126,20 +135,43 @@ class IdeologyAgent(Agent):
         self.build_counter = 0
         self.intent_build = False
 
+        # NEW: maintenance activity
+        self.repairing = False
+        self.repair_counter = 0
+        self.repair_target: ResourcePatch | None = None
+
     def step(self) -> None:
-        if self.ideology == "socialist":
-            self.socialist_step()
-        elif self.ideology == "capitalist":
-            self.capitalist_step()
-        elif self.ideology == "green_capitalist":
-            self.capitalist_green_step()
-        elif self.ideology == "green_socialist":
-            self.socialist_green_step()
-        elif self.ideology == "adaptive":
-            self.adaptive_step()
+        # If repairing, finish that first
+        if self.repairing:
+            self.repair_counter -= 1
+            if self.repair_counter <= 0 and self.repair_target:
+                # complete maintenance
+                self.repair_target.under_maintenance = False
+                self.repair_target.degraded = False
+                self.repair_target.maintenance_progress = 0
+                # restore some capacity so it's immediately usable
+                self.repair_target.amount = max(self.repair_target.amount, int(0.5 * self.repair_target.max_capacity))
+                # end repair state
+                self.repairing = False
+                self.repair_target = None
+            # small upkeep while repairing
+            self.energy -= 0.2
+            # baseline upkeep and death handled below
         else:
-            self.capitalist_step()
-    
+            # Choose behavior by ideology
+            if self.ideology == "socialist":
+                self.socialist_step()
+            elif self.ideology == "capitalist":
+                self.capitalist_step()
+            elif self.ideology == "green_capitalist":
+                self.capitalist_green_step()
+            elif self.ideology == "green_socialist":
+                self.socialist_green_step()
+            elif self.ideology == "adaptive":
+                self.adaptive_step()
+            else:
+                self.capitalist_step()
+
         # baseline upkeep
         self.energy -= 0.5
         if self.energy <= 0:
@@ -147,9 +179,25 @@ class IdeologyAgent(Agent):
             self.model.schedule.remove(self)
             return
 
-    # --- Capitalist behaviour (existing, kept) ---
+    # ----- Common helper: if on a degraded renewable, start repairing -----
+    def _maybe_start_repair(self):
+        cell = self.model.grid.get_cell_list_contents([self.pos])
+        patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
+        if patch and patch.degraded and not patch.under_maintenance and not self.repairing:
+            patch.under_maintenance = True
+            patch.maintenance_progress = 0
+            self.repairing = True
+            self.repair_counter = self.model.maintenance_duration
+            self.repair_target = patch
+            return True
+        return False
+
+    # --- Capitalist behaviour ---
     def capitalist_step(self) -> None:
-        # Continue mining if already engaged
+        # If standing on a degraded renewable, repair instead of mining
+        if self._maybe_start_repair():
+            return
+
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
@@ -173,7 +221,6 @@ class IdeologyAgent(Agent):
                         if net_gain > 0:
                             self.total_collected_energy += net_gain
 
-                        # remove depleted nonrenewable patch from world
                         if obj.amount <= 0 and obj.resource_type == "nonrenewable":
                             self.model.grid.remove_agent(obj)
                             self.model.schedule.remove(obj)
@@ -186,8 +233,7 @@ class IdeologyAgent(Agent):
                 self.mining_target = None
             return
 
-        # --- Targeting logic ---
-        # 1. Look for closest nonrenewable patch with resources
+        # Targeting: prefer nonrenewables nearby; fallback to renewables
         closest_nonrenewable = None
         min_dist_nonrenewable = None
         for pos in self.model.nonrenewable_locations:
@@ -203,7 +249,6 @@ class IdeologyAgent(Agent):
                 min_dist_nonrenewable = dist
                 closest_nonrenewable = pos
 
-        # 2. If no nonrenewable OR it's far, look for closest renewable
         best_patch_pos = None
         if closest_nonrenewable is not None and (min_dist_nonrenewable <= 10):
             best_patch_pos = closest_nonrenewable
@@ -215,7 +260,7 @@ class IdeologyAgent(Agent):
                     continue
                 cell_objs = self.model.grid.get_cell_list_contents([pos])
                 patch = next((o for o in cell_objs if isinstance(o, ResourcePatch)
-                              and o.resource_type == "renewable" and o.amount > 0), None)
+                              and o.resource_type == "renewable" and o.amount > 0 and not getattr(o, "degraded", False)), None)
                 if patch is None:
                     continue
                 dist = self.manhattan_distance(self.pos, pos)
@@ -224,29 +269,32 @@ class IdeologyAgent(Agent):
                     closest_renewable = pos
             best_patch_pos = closest_renewable if closest_renewable else closest_nonrenewable
 
-        # 3. Move towards target and mine when reached
         if best_patch_pos:
             speed = 2 if self.energy > 15 else 1
             self.move_towards(best_patch_pos, speed=speed)
             if self.pos == best_patch_pos:
+                # try repair if degraded
+                if self._maybe_start_repair():
+                    return
                 self.mining = True
                 self.mining_counter = 3
                 resources_here = [o for o in self.model.grid.get_cell_list_contents([self.pos]) if isinstance(o, ResourcePatch)]
                 self.mining_target = resources_here[0] if resources_here else None
 
-    # --- Socialist behaviour (new) ---
+    # --- Socialist behaviour ---
     def socialist_step(self) -> None:
-        # Finish mining if already mining
+        # If standing on a degraded renewable, repair first
+        if self._maybe_start_repair():
+            return
+
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
-                # resolve mining payoff on the tile we’re on
                 cell = self.model.grid.get_cell_list_contents([self.pos])
                 patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
                 hub_here = any(isinstance(o, EnergyHub) and o.built for o in cell)
 
                 if patch:
-                    # setup + op costs + yield (hub reduces op_cost by 1 and adds +1 yield on renewables)
                     if patch.resource_type == "renewable":
                         if patch.unique_id not in self.renewable_setup_paid:
                             setup_cost = self.model.cost_renewable_setup
@@ -257,7 +305,6 @@ class IdeologyAgent(Agent):
                                 self.mining = False
                                 self.mining_target = None
                                 return
-
                         desired = self.model.yield_per_mine_renewable + (1 if hub_here else 0)
                         op_cost = max(0, self.model.cost_extract_renewable - (1 if hub_here else 0))
                     else:
@@ -270,7 +317,6 @@ class IdeologyAgent(Agent):
                     if net_gain > 0:
                         self.total_collected_energy += net_gain
 
-                    # Deplete nonrenewables fully remove
                     if patch.amount <= 0 and patch.resource_type == "nonrenewable":
                         self.model.grid.remove_agent(patch)
                         self.model.schedule.remove(patch)
@@ -280,16 +326,14 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                    # ---- Safe tithe and skim using slider floor ----
+                    # Safe tithe & skim using pool floor
                     floor = getattr(self.model, "pool_floor", 10.0)
-
                     if net_gain > 0 and self.energy > floor:
                         tithe = self.model.tithe_rate * net_gain
                         tithe = min(tithe, max(0.0, self.energy - floor))
                         if tithe > 0:
                             self.energy -= tithe
                             self.model.community_pool += tithe
-
                     safe_cap = max(self.energy_cap, floor)
                     if self.energy > safe_cap:
                         skim = max(0.0, self.energy - safe_cap)
@@ -297,16 +341,12 @@ class IdeologyAgent(Agent):
                             self.energy -= skim
                             self.model.community_pool += skim
 
-
                 self.mining = False
                 self.mining_target = None
-
-                # Share locally after mining
                 self.redistribute_to_neighbors()
             return
 
-        # ------- TARGET SELECTION -------
-        # Emergency: go to nearest resource (speed > rules)
+        # Target selection
         if self.energy < self.emergency_floor:
             pos_r, dist_r, patch_r = self._nearest_patch("renewable")
             pos_n, dist_n, patch_n = self._nearest_patch("nonrenewable")
@@ -314,40 +354,39 @@ class IdeologyAgent(Agent):
                 self.idle_wander(); return
             target = pos_r if (patch_n is None or (patch_r is not None and dist_r <= dist_n)) else pos_n
         else:
-            # NEW: choose resource type based on average energy
             avg_e = self.model.average_energy()
             preferred = "renewable" if avg_e > 5.0 else "nonrenewable"
-
             pos_p, dist_p, patch_p = self._nearest_patch(preferred)
             if patch_p is None:
-                # fallback to the other type if none available
                 other = "nonrenewable" if preferred == "renewable" else "renewable"
                 pos_p, dist_p, patch_p = self._nearest_patch(other)
                 if patch_p is None:
                     self.idle_wander(); return
             target = pos_p
 
-        # Move toward target
         if target:
             self.move_towards(target, speed=1)
-            # cooperative build if we’re on a renewable patch with no hub
             if self.pos == target:
+                # try repair if degraded
+                if self._maybe_start_repair():
+                    return
                 self._maybe_build_hub_or_mine()
                 return
 
-        # Opportunistic sharing while travelling (very rich)
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
 
     def capitalist_green_step(self):
-        # Finish mining if already engaged
+        # If on a degraded renewable, repair
+        if self._maybe_start_repair():
+            return
+
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
                 cell = self.model.grid.get_cell_list_contents([self.pos])
                 patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
                 if patch:
-                    # (No hubs for capitalists; same setup logic for renewables)
                     if patch.resource_type == "renewable":
                         if patch.unique_id not in self.renewable_setup_paid and self.energy >= self.model.cost_renewable_setup:
                             self.energy -= self.model.cost_renewable_setup
@@ -361,12 +400,10 @@ class IdeologyAgent(Agent):
                     gained = patch.harvest(desired)
                     net = gained - op_cost
 
-                    # Apply policy: tax nonrenewables, subsidize renewables
                     if gained > 0:
                         if patch.resource_type == "nonrenewable":
                             tax = self.model.carbon_tax_per_unit * gained
                             net -= tax
-                            # send tax to community pool (or drop it if you prefer)
                             self.model.community_pool += max(0.0, tax)
                         else:
                             subsidy = self.model.renewable_subsidy_per_unit * gained
@@ -376,7 +413,6 @@ class IdeologyAgent(Agent):
                     if net > 0:
                         self.total_collected_energy += net
 
-                    # Remove depleted nonrenewables from world + cache
                     if patch.amount <= 0 and patch.resource_type == "nonrenewable":
                         self.model.grid.remove_agent(patch)
                         self.model.schedule.remove(patch)
@@ -388,13 +424,17 @@ class IdeologyAgent(Agent):
                 self.mining_target = None
             return
 
-        # Target selection: pick the patch with best green-adjusted score
+        # Score resources, avoid scarred/overused renewables
         best_pos, best_score = None, -1e18
 
-        # scan renewables
         for pos in list(self.model.renewable_locations):
             cell = self.model.grid.get_cell_list_contents([pos])
-            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.amount > 0 and o.resource_type == "renewable"), None)
+            patch = next((o for o in cell if isinstance(o, ResourcePatch)
+                          and o.amount > 0
+                          and o.resource_type == "renewable"
+                          and not o.degraded
+                          and o.cooldown_remaining == 0
+                          and o.fatigue < self.model.renewable_overuse_trigger), None)
             if not patch: continue
             if any(isinstance(a, IdeologyAgent) for a in cell):  # avoid crowding
                 continue
@@ -402,10 +442,11 @@ class IdeologyAgent(Agent):
             if s > best_score:
                 best_pos, best_score = pos, s
 
-        # scan nonrenewables
         for pos in list(self.model.nonrenewable_locations):
             cell = self.model.grid.get_cell_list_contents([pos])
-            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.amount > 0 and o.resource_type == "nonrenewable"), None)
+            patch = next((o for o in cell if isinstance(o, ResourcePatch)
+                          and o.amount > 0
+                          and o.resource_type == "nonrenewable"), None)
             if not patch: continue
             if any(isinstance(a, IdeologyAgent) for a in cell):
                 continue
@@ -413,10 +454,11 @@ class IdeologyAgent(Agent):
             if s > best_score:
                 best_pos, best_score = pos, s
 
-        # Move & mine
         if best_pos:
             self.move_towards(best_pos, speed=2 if self.energy > 15 else 1)
             if self.pos == best_pos:
+                if self._maybe_start_repair():
+                    return
                 self.mining = True
                 self.mining_counter = 3
                 self.mining_target = next((o for o in self.model.grid.get_cell_list_contents([self.pos]) if isinstance(o, ResourcePatch)), None)
@@ -424,7 +466,10 @@ class IdeologyAgent(Agent):
             self.idle_wander()
 
     def socialist_green_step(self):
-        # Finish mining
+        # If on a degraded renewable, repair first
+        if self._maybe_start_repair():
+            return
+
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
@@ -466,16 +511,14 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                     # ---- Safe tithe and skim using slider floor ----
+                    # Safe tithe / skim with pool floor
                     floor = getattr(self.model, "pool_floor", 10.0)
-
                     if net_gain > 0 and self.energy > floor:
                         tithe = self.model.tithe_rate * net_gain
                         tithe = min(tithe, max(0.0, self.energy - floor))
                         if tithe > 0:
                             self.energy -= tithe
                             self.model.community_pool += tithe
-
                     safe_cap = max(self.energy_cap, floor)
                     if self.energy > safe_cap:
                         skim = max(0.0, self.energy - safe_cap)
@@ -488,11 +531,10 @@ class IdeologyAgent(Agent):
                 self.redistribute_to_neighbors()
             return
 
-        # Target selection: pick highest green-adjusted score but still follow socialist "safety" rule
+        # Target selection with socialist safety and green scoring; avoid degraded/overused renewables
         avg_energy = self.model.average_energy()
         best_pos, best_score = None, -1e18
         for res_type in ["renewable", "nonrenewable"]:
-            # socialist logic: prefer renewable if avg energy high
             if avg_energy > 5 and res_type == "nonrenewable":
                 continue
             if avg_energy <= 5 and res_type == "renewable":
@@ -500,22 +542,28 @@ class IdeologyAgent(Agent):
             locations = self.model.renewable_locations if res_type == "renewable" else self.model.nonrenewable_locations
             for pos in list(locations):
                 cell = self.model.grid.get_cell_list_contents([pos])
-                patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.amount > 0 and o.resource_type == res_type), None)
+                if res_type == "renewable":
+                    patch = next((o for o in cell if isinstance(o, ResourcePatch)
+                                  and o.amount > 0 and o.resource_type == "renewable"
+                                  and not o.degraded and o.cooldown_remaining == 0 and o.fatigue < self.model.renewable_overuse_trigger), None)
+                else:
+                    patch = next((o for o in cell if isinstance(o, ResourcePatch)
+                                  and o.amount > 0 and o.resource_type == "nonrenewable"), None)
                 if not patch:
                     continue
                 score = self._green_profit_score(pos, patch)
                 if score > best_score:
                     best_pos, best_score = pos, score
 
-        # Move & act
         if best_pos:
             self.move_towards(best_pos, speed=1)
             if self.pos == best_pos:
+                if self._maybe_start_repair():
+                    return
                 self._maybe_build_hub_or_mine()
         else:
             self.idle_wander()
 
-        # Opportunistic sharing while moving
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
 
@@ -544,26 +592,25 @@ class IdeologyAgent(Agent):
             return
         hub_here = any(isinstance(o, EnergyHub) and o.built for o in cell)
 
-        if patch.resource_type == "renewable" and not hub_here:
-            # signal and look for partner socialist at same tile
+        if patch.resource_type == "renewable" and not hub_here and not patch.degraded and not patch.under_maintenance:
             self.intent_build = True
             partners = [a for a in self.model.grid.get_cell_list_contents([self.pos])
                         if isinstance(a, IdeologyAgent) and a.ideology == "socialist" and getattr(a, "intent_build", False)]
             if len(partners) >= 2 and self.energy >= 3:
                 self.build_counter += 1
-                self.energy -= 0.2  # light build drain
+                self.energy -= 0.2
                 if self.build_counter >= self.coop_build_time:
                     hub = EnergyHub(self.model.next_id(), self.model, self.pos)
                     self.model.grid.place_agent(hub, self.pos)
                     self.model.schedule.add(hub)
-                    self.energy -= 2.0  # joint build cost (each agent pays when it completes)
+                    self.energy -= 2.0
                     self.build_counter = 0
                     self.intent_build = False
                     return
                 else:
-                    return  # keep building next step
+                    return
             else:
-                self.build_counter = 0  # wait for partner; if none arrives, fall through
+                self.build_counter = 0
 
         # no building: start mining
         self.mining = True
@@ -579,14 +626,16 @@ class IdeologyAgent(Agent):
         best_pos, best_dist, best_patch = None, None, None
         for pos in list(locs):
             cell = self.model.grid.get_cell_list_contents([pos])
-            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == rtype and o.amount > 0), None)
+            patch = next((o for o in cell if isinstance(o, ResourcePatch)
+                          and o.resource_type == rtype
+                          and o.amount > 0
+                          and (rtype != "renewable" or (not getattr(o, "degraded", False)))
+                          ), None)
             if not patch:
                 continue
-            # avoid crowding: skip if an agent stands here already
             if any(isinstance(a, IdeologyAgent) for a in cell):
                 continue
             d = self.manhattan_distance(self.pos, pos)
-            # renewable bias: treat as if closer
             if rtype == "renewable":
                 d = max(0, d - self.renewable_bias)
             if best_dist is None or d < best_dist:
@@ -625,8 +674,7 @@ class IdeologyAgent(Agent):
             a.energy += share_i
             self.energy -= share_i
 
-
-    # --- movement helpers (kept from your file) ---
+    # movement helpers
     def move_towards(self, target_pos, speed: int = 1) -> None:
         curr_x, curr_y = self.pos
         target_x, target_y = target_pos
@@ -646,11 +694,10 @@ class IdeologyAgent(Agent):
 
     def manhattan_distance(self, p1, p2) -> int:
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
-    
+
     def _green_profit_score(self, pos, patch) -> float:
         """
         Estimate profit after policy (tax/subsidy) and distance; penalize highly scarred renewables.
-        Higher is better.
         """
         if patch.resource_type == "renewable":
             base_yield = self.model.yield_per_mine_renewable
@@ -667,4 +714,3 @@ class IdeologyAgent(Agent):
         est_net = (base_yield - op_cost) + policy - scar_pen
         d = self.manhattan_distance(self.pos, pos)
         return est_net / (d + 1)
-

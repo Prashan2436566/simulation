@@ -5,18 +5,16 @@ from model.model import IdeologyModel, LegendElement, StatsElement
 from model.agent import IdeologyAgent, ResourcePatch, EnergyHub
 from mesa.visualization.modules import ChartModule
 
-
 def agent_portrayal(agent):
     if isinstance(agent, IdeologyAgent):
         colour_map = {
-        "capitalist": "blue",
-        "socialist": "orange",
-        "green_capitalist": "teal",
-        "green_socialist": "brown",
-        "communist": "red",
-        "adaptive": "purple",
+            "capitalist": "blue",
+            "socialist": "orange",
+            "green_capitalist": "teal",
+            "green_socialist": "brown",
+            "communist": "red",
+            "adaptive": "purple",
         }
-
         color = colour_map.get(getattr(agent, "ideology", "capitalist"), "blue")
         energy_norm = min(max(agent.energy / 10, 0), 1) if hasattr(agent, "energy") else 0.5
         return {
@@ -25,16 +23,28 @@ def agent_portrayal(agent):
             "Filled": "true",
             "Layer": 1,
             "r": 0.6 + 0.2 * energy_norm,
+            "stroke_color": "black",
+            "stroke_width": 1
         }
 
     if isinstance(agent, ResourcePatch):
         # Base color by type
-        color = "grey" if agent.resource_type == "nonrenewable" else "lightgreen"
-        # NEW: display scar level on renewables (simple text cue)
-        label = ""
-        if agent.resource_type == "renewable":
-            s = getattr(agent, "scar_level", 0.0)
-            label = f"{s:.1f}" if s >= 0.5 else ""
+        if agent.resource_type == "nonrenewable":
+            color = "grey"
+            label = ""
+        else:
+            # Renewable visuals
+            if getattr(agent, "under_maintenance", False):
+                color = "#FFD700"  # gold
+                label = "🔧"
+            elif getattr(agent, "degraded", False):
+                color = "#8B4513"  # saddlebrown
+                label = "D"
+            else:
+                color = "lightgreen"
+                s = getattr(agent, "scar_level", 0.0)
+                label = f"{s:.1f}" if s >= 0.5 else ""
+
         return {
             "Shape": "rect",
             "Color": color,
@@ -44,6 +54,8 @@ def agent_portrayal(agent):
             "h": 1,
             "text": label,
             "text_color": "black",
+            "stroke_color": "#202020",
+            "stroke_width": 1
         }
 
     if isinstance(agent, EnergyHub):
@@ -56,11 +68,14 @@ def agent_portrayal(agent):
             "h": 0.9,
             "text": "S",
             "text_color": "orange",
+            "stroke_color": "orange",
+            "stroke_width": 2
         }
 
     return None
 
 grid = CanvasGrid(agent_portrayal, 30, 30, 500, 500)
+
 chart_econ = ChartModule(
     [
         {"Label": "AvgEnergy", "Color": "blue"},
@@ -80,7 +95,6 @@ chart_env = ChartModule(
     data_collector_name="datacollector",
 )
 
-# Optional 3rd chart (per-ideology counts) — only if you uncommented the reporters in model.py
 chart_ideo = ChartModule(
      [
          {"Label": "Ideology_capitalist", "Color": "blue"},
@@ -105,13 +119,12 @@ chart_gini = ChartModule(
     data_collector_name="datacollector",
 )
 
-
 model_params = {
     "width": 30,
     "height": 30,
     "num_agents": UserSettableParameter("slider", "Number of agents", 15, 1, 50, 1),
     "renewables_regenerate": UserSettableParameter("checkbox", "Renewables regenerate", True),
-    "ideology": "capitalist",  # will be overridden from main.py
+    "ideology": "capitalist",  # can be overridden from main.py
     # Economics
     "cost_renewable_setup": UserSettableParameter("slider", "Setup cost (renewable)", 5.0, 0.0, 20.0, 0.5),
     "cost_extract_renewable": UserSettableParameter("slider", "Op cost per mine (renewable)", 1.0, 0.0, 10.0, 0.5),
@@ -122,9 +135,12 @@ model_params = {
     "renewable_cooldown_steps": UserSettableParameter("slider", "Renewable cooldown steps", 5, 0, 20, 1),
     "renewable_overuse_trigger": UserSettableParameter("slider", "Overuse trigger (units)", 6, 1, 20, 1),
     "renewable_fatigue_decay": UserSettableParameter("slider", "Fatigue decay per step", 1, 0, 5, 1),
-
+    # Redistribution safety floor
     "pool_floor": UserSettableParameter("slider", "Give-to-Pool Floor", 10.0, 0.0, 30.0, 0.5),
-
+    # NEW: degradation/maintenance controls
+    "degrade_interval": UserSettableParameter("slider", "Degrade interval (steps)", 10, 0, 50, 1),
+    "degrade_probability": UserSettableParameter("slider", "Degrade probability @ interval", 0.5, 0.0, 1.0, 0.05),
+    "maintenance_duration": UserSettableParameter("slider", "Maintenance duration (steps)", 5, 1, 20, 1),
 }
 
 server = ModularServer(
@@ -133,4 +149,3 @@ server = ModularServer(
     "Sociopolitical Ideologies Simulation",
     model_params,
 )
-
