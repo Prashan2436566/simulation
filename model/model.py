@@ -1,27 +1,27 @@
 from mesa import Model
 from mesa.space import MultiGrid
 from mesa.time import RandomActivation
-from .agent import IdeologyAgent, ResourcePatch, EnergyHub
-import random
 from mesa.visualization.modules import TextElement
 from mesa.datacollection import DataCollector
+import random
+
+from .agent import IdeologyAgent, ResourcePatch, EnergyHub
 
 
 class LegendElement(TextElement):
     def render(self, model):
         return """
-        <div style='font-size:14px;'>
-            <b>Legend:</b><br>
-            <span style='color:green;'>🟩 Renewable Resource</span><br>
-            <span style='color:gray;'>⬜ Non-renewable Resource</span><br>
-            <span style='color:blue;'>🔵 Capitalist Agent</span><br>
-            <span style='color:teal;'>🟢 Teal Capitalist Agent</span><br>
-            <span style='color:orange;'>🟠 Orange Socialist Agent</span><br>
-            <span style='color:brown;'>🟤 Brown Green-Socialist Agent</span><br>
-            <span>🟧 S: Energy Hub (on renewable)</span><br>
-            <span style='color:red;'>🔴 Scar / Pollution number</span><br>
-            <span style='color:#8B4513;'>🟫 D: Degraded renewable (disabled)</span><br>
-            <span style='color:#FFD700;'>🟨 🔧: Under maintenance (being repaired)</span>
+        <div style='font-size:14px; line-height:1.25;'>
+            <b>Legend</b><br>
+            <span style='color:lightgreen;'>🟩 Renewable</span> 
+            <span style='color:#ff0000;'>(D border = degraded)</span><br>
+            <span style='color:gray;'>⬜ Non-renewable</span><br>
+            <span style='color:blue;'>🔵 Capitalist</span>
+            <span style='color:teal;'>🟢 Green Capitalist</span><br>
+            <span style='color:orange;'>🟠 Socialist</span>
+            <span style='color:brown;'>🟤 Green Socialist</span><br>
+            <span style='color:orange;'>🟧 S</span> = Energy Hub (renewable)<br>
+            <span style='color:red;'>🔴 Numbers</span> on green tiles = local scar (pollution)
         </div>
         """
 
@@ -30,24 +30,23 @@ class StatsElement(TextElement):
     def render(self, model):
         agents = [a for a in model.schedule.agents if hasattr(a, "energy")]
         n_agents = len(agents)
-        avg_e = (sum(a.energy for a in agents) / n_agents) if n_agents else 0
-        # Aggregate scar level across renewable patches
+        avg_e = (sum(a.energy for a in agents) / n_agents) if n_agents else 0.0
         scars = 0.0
         for x in range(model.width):
             for y in range(model.height):
                 for obj in model.grid.get_cell_list_contents((x, y)):
                     if isinstance(obj, ResourcePatch) and obj.resource_type == "renewable":
                         scars += getattr(obj, "scar_level", 0.0)
+
         return f"""
-        <div style='font-size:14px;'>
-            <b>Stats:</b><br>
+        <div style='font-size:14px; line-height:1.25;'>
+            <b>Stats</b><br>
             Total Agents Created: {model.total_agents_created}<br>
-            Living Agents: {len(agents)}<br>
+            Living Agents: {n_agents}<br>
             Total Resources Mined (raw): {model.total_mined_energy:.2f}<br>
             Community Pool: {model.community_pool:.2f} (redistribute every {model.redistribute_every} steps)<br>
             Avg Energy: {avg_e:.2f}<br>
-            Total Scar Level: {scars:.2f}<br>
-            Step: {model.step_count}
+            Total Scar Level: {scars:.2f}
         </div>
         """
 
@@ -71,12 +70,13 @@ class IdeologyModel(Model):
         renewable_cooldown_steps: int = 5,
         renewable_overuse_trigger: int = 6,
         renewable_fatigue_decay: int = 1,
-        # Pool floor slider (prevents socialist death during tithe/share)
+        # Redistribution safety floor (used by socialist sharing + repair heuristics)
         pool_floor: float = 10.0,
-        # NEW: periodic degradation + maintenance
-        degrade_interval: int = 10,       # every N steps, consider degrading one renewable
-        degrade_probability: float = 0.5, # 50% chance when interval hits
-        maintenance_duration: int = 5,    # steps needed to repair by an agent
+        # Degradation controls (periodic chance to degrade one renewable)
+        degrade_period: int = 10,
+        degrade_chance: float = 0.5,
+        # Instant repair cost (energy spent by a repairing agent)
+        repair_energy_cost: float = 10.0,
     ) -> None:
         self.current_id = 0
         self.grid = MultiGrid(width, height, torus=True)
@@ -84,11 +84,11 @@ class IdeologyModel(Model):
         self.running = True
         self.width = width
         self.height = height
+
+        # Config
         self.renewables_regenerate = renewables_regenerate
         self.ideology = ideology
         self.policy_enabled = policy_enabled
-
-        self.pool_floor = pool_floor
 
         # Economics
         self.cost_renewable_setup = cost_renewable_setup
@@ -102,49 +102,51 @@ class IdeologyModel(Model):
         self.renewable_overuse_trigger = renewable_overuse_trigger
         self.renewable_fatigue_decay = renewable_fatigue_decay
 
-        self.total_agents_created = 0
-        self.total_mined_energy = 0
-
-        self.nonrenewable_locations: list[tuple[int, int]] = []
-        self.renewable_locations: list[tuple[int, int]] = []
-
-        # --- Social policy knobs ---
+        # Social policy knobs
         self.community_pool = 0.0
         self.tithe_rate = 0.30
         self.basic_income = 0.10
         self.redistribute_every = 5
-        self.share_floor = 20    # (you can tune this in server sliders if exposed)
+        self.share_floor = 6.0
         self._since_last_redistribute = 0
+        self.pool_floor = pool_floor  # agents won’t donate below this
 
-        # --- Scar mechanics ---
+        # Environmental scar mechanics
         self.scar_radius = 1
         self.scar_increase_per_unit = 0.15
         self.scar_decay = 0.02
         self.scar_regen_alpha = 0.5
         self.scar_max = 3.0
-        self.scar_collapse_threshold = 1
+        self.scar_collapse_threshold = 1.0  # if scar >= this, renewable collapses
 
-        # --- Environmental policy (used by green agents) ---
+        # Green policy knobs
         self.carbon_tax_per_unit = 0.5
         self.renewable_subsidy_per_unit = 0.2
         self.scar_avoid_alpha = 0.4
 
-        # Per-step mining counters
+        # Repair/degrade system
+        self.degrade_period = degrade_period
+        self.degrade_chance = degrade_chance
+        self.repair_energy_cost = repair_energy_cost
+        self.step_count = 0
+
+        # Mining accounting (for charts)
         self._mined_renewable_this_step = 0
         self._mined_nonrenewable_this_step = 0
         self.mined_renewable_last_step = 0
         self.mined_nonrenewable_last_step = 0
 
-        # NEW: periodic degradation / maintenance settings
-        self.degrade_interval = degrade_interval
-        self.degrade_probability = degrade_probability
-        self.maintenance_duration = maintenance_duration
-        self.step_count = 0
+        # Counters & caches
+        self.total_agents_created = 0
+        self.total_mined_energy = 0.0
+        self.nonrenewable_locations: list[tuple[int, int]] = []
+        self.renewable_locations: list[tuple[int, int]] = []
 
-        # Populate world
+        # Scatter resources
         self._scatter_resources("renewable", 100)
         self._scatter_resources("nonrenewable", 100)
 
+        # Spawn agents
         for _ in range(num_agents):
             agent = IdeologyAgent(self.next_id(), self, ideology)
             x = self.random.randrange(self.grid.width)
@@ -152,29 +154,30 @@ class IdeologyModel(Model):
             self.grid.place_agent(agent, (x, y))
             self.schedule.add(agent)
 
-        # Data Collector
-        self.datacollector = DataCollector(model_reporters={
-            "AvgEnergy": lambda m: m.average_energy(),
-            "CommunityPool": lambda m: m.community_pool,
-            "TotalScar": lambda m: sum(
-                getattr(obj, "scar_level", 0.0)
-                for x in range(m.width)
-                for y in range(m.height)
-                for obj in m.grid.get_cell_list_contents((x, y))
-                if hasattr(obj, "scar_level")
-            ),
-            "Renewables": lambda m: len(m.renewable_locations),
-            "NonRenewables": lambda m: len(m.nonrenewable_locations),
-            "InfrastructureSites": lambda m: len(getattr(m, "infrastructure_locations", [])),
-            "AgentsAlive": lambda m: sum(1 for a in m.schedule.agents if hasattr(a, "energy")),
-            "GiniEnergy": lambda m: m.gini_energy(),
-            "MinedRenewable": lambda m: m.mined_renewable_last_step,
-            "MinedNonrenewable": lambda m: m.mined_nonrenewable_last_step,
-        })
-
-        # Collect initial data for step 0
+        # Data collector for charts
+        self.datacollector = DataCollector(
+            model_reporters={
+                "AvgEnergy": lambda m: m.average_energy(),
+                "CommunityPool": lambda m: m.community_pool,
+                "TotalScar": lambda m: sum(
+                    getattr(obj, "scar_level", 0.0)
+                    for x in range(m.width)
+                    for y in range(m.height)
+                    for obj in m.grid.get_cell_list_contents((x, y))
+                    if isinstance(obj, ResourcePatch)
+                ),
+                "Renewables": lambda m: len(m.renewable_locations),
+                "NonRenewables": lambda m: len(m.nonrenewable_locations),
+                "InfrastructureSites": lambda m: 0,  # placeholder
+                "AgentsAlive": lambda m: sum(1 for a in m.schedule.agents if hasattr(a, "energy")),
+                "GiniEnergy": lambda m: m.gini_energy(),
+                "MinedRenewable": lambda m: m.mined_renewable_last_step,
+                "MinedNonrenewable": lambda m: m.mined_nonrenewable_last_step,
+            }
+        )
         self.datacollector.collect(self)
 
+    # ---------- world setup ----------
     def _scatter_resources(self, resource_type: str, num_patches: int) -> None:
         placed = 0
         while placed < num_patches:
@@ -191,31 +194,19 @@ class IdeologyModel(Model):
                     self.renewable_locations.append((x, y))
                 placed += 1
 
-    def _periodic_degrade_one_renewable(self):
-        """Every `degrade_interval` steps, with probability p, pick one healthy renewable and mark it degraded."""
-        if self.degrade_interval <= 0:
-            return
-        if self.step_count % self.degrade_interval != 0:
-            return
-        if random.random() > self.degrade_probability:
-            return
-
-        # find healthy renewable patches
+    # ---------- degrade control ----------
+    def degrade_random_renewable(self):
+        """Pick one healthy renewable and mark it degraded (if any)."""
         candidates = []
         for pos in list(self.renewable_locations):
-            for obj in self.grid.get_cell_list_contents([pos]):
-                if isinstance(obj, ResourcePatch) and obj.resource_type == "renewable":
-                    if not obj.degraded and not obj.under_maintenance:
-                        candidates.append(obj)
-        if not candidates:
-            return
+            cell = self.grid.get_cell_list_contents([pos])
+            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
+            if patch and not getattr(patch, "is_degraded", False):
+                candidates.append(patch)
+        if candidates:
+            self.random.choice(candidates).mark_degraded()
 
-        victim = random.choice(candidates)
-        victim.degraded = True
-        victim.under_maintenance = False
-        victim.maintenance_progress = 0
-        # Optional: visually emphasize — we rely on portrayal colors/text
-
+    # ---------- redistribution ----------
     def redistribute_pool(self):
         agents = [a for a in self.schedule.agents if hasattr(a, "energy")]
         needy = [a for a in agents if a.energy < self.share_floor]
@@ -231,54 +222,57 @@ class IdeologyModel(Model):
             a.energy += give
             self.community_pool -= give
 
+    # ---------- step ----------
     def step(self) -> None:
-        # Reset per-step mining counters
+        # periodic degrade
+        self.step_count += 1
+        if self.degrade_period > 0:
+            if self.step_count % self.degrade_period == 0 and self.random.random() < self.degrade_chance:
+                self.degrade_random_renewable()
+
+        # reset per-step mined counters
         self._mined_renewable_this_step = 0
         self._mined_nonrenewable_this_step = 0
 
-        # Everyone gets a basic income
+        # basic income
         for a in list(self.schedule.agents):
             if hasattr(a, "energy"):
                 a.energy += self.basic_income
 
-        # Periodic redistribution from community pool
+        # periodic redistribution
         self._since_last_redistribute += 1
         if self._since_last_redistribute >= self.redistribute_every:
             self.redistribute_pool()
             self._since_last_redistribute = 0
 
-        # Advance all agents/patches
+        # advance
         self.schedule.step()
 
-        # Periodic random degradation event
-        self.step_count += 1
-        self._periodic_degrade_one_renewable()
-
-        # Publish this step’s mining totals for the charts
+        # publish this step’s mined totals
         self.mined_renewable_last_step = self._mined_renewable_this_step
         self.mined_nonrenewable_last_step = self._mined_nonrenewable_this_step
 
-        # Collect after the step so charts reflect this tick’s actions
+        # collect for charts
         self.datacollector.collect(self)
 
+    # ---------- utils ----------
     def next_id(self) -> int:
         self.current_id += 1
         return self.current_id
 
     def average_energy(self) -> float:
-        agents = [a.energy for a in self.schedule.agents if hasattr(a, "energy")]
-        return (sum(agents) / len(agents)) if agents else 0.0
-
-    def _avg(self, seq):
-        seq = list(seq)
-        return (sum(seq) / len(seq)) if seq else 0.0
+        vals = [a.energy for a in self.schedule.agents if hasattr(a, "energy")]
+        return (sum(vals) / len(vals)) if vals else 0.0
 
     def gini_energy(self) -> float:
         vals = sorted([a.energy for a in self.schedule.agents if hasattr(a, "energy") and a.energy >= 0])
         n = len(vals)
-        if n == 0 or sum(vals) == 0:
+        if n == 0:
+            return 0.0
+        total = sum(vals)
+        if total == 0:
             return 0.0
         cum = 0.0
         for i, v in enumerate(vals, 1):
             cum += i * v
-        return (2 * cum) / (n * sum(vals)) - (n + 1) / n
+        return (2 * cum) / (n * total) - (n + 1) / n
