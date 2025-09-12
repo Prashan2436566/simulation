@@ -85,10 +85,17 @@ chart_econ = ChartModule(
         {"Label": "AvgEnergy", "Color": "blue"},
         {"Label": "CommunityPool", "Color": "orange"},
         {"Label": "AgentsAlive", "Color": "green"},
+        
     ],
     data_collector_name="datacollector",
 )
-
+chart_adapt = ChartModule(
+    [
+        {"Label": "AvgAdaptiveEpsilon", "Color": "black"},
+        {"Label": "AvgAdaptiveReward", "Color": "purple"},
+    ],
+    data_collector_name="datacollector",
+)
 chart_env = ChartModule(
     [
         {"Label": "TotalScar", "Color": "red"},
@@ -105,6 +112,7 @@ chart_ideo = ChartModule(
         {"Label": "Ideology_green_capitalist", "Color": "teal"},
         {"Label": "Ideology_socialist", "Color": "orange"},
         {"Label": "Ideology_green_socialist", "Color": "brown"},
+        {"Label": "Ideology_adaptive", "Color": "purple"},
     ],
     data_collector_name="datacollector",
 )
@@ -154,7 +162,7 @@ model_params = {
 
 server = ModularServer(
     IdeologyModel,
-    [grid, LegendElement(), StatsElement(), chart_econ, chart_env, chart_ideo, chart_mining, chart_gini],
+    [grid, LegendElement(), StatsElement(), chart_econ, chart_env, chart_ideo, chart_mining, chart_gini,chart_adapt],
     "Sociopolitical Ideologies Simulation",
     model_params,
 )

@@ -157,6 +157,10 @@ class IdeologyModel(Model):
         # Data collector for charts
         self.datacollector = DataCollector(
             model_reporters={
+                "Ideology_adaptive": lambda m: sum(
+                    1 for a in m.schedule.agents if getattr(a, "ideology", "") == "adaptive"
+                ),
+
                 "AvgEnergy": lambda m: m.average_energy(),
                 "CommunityPool": lambda m: m.community_pool,
                 "TotalScar": lambda m: sum(
@@ -173,6 +177,17 @@ class IdeologyModel(Model):
                 "GiniEnergy": lambda m: m.gini_energy(),
                 "MinedRenewable": lambda m: m.mined_renewable_last_step,
                 "MinedNonrenewable": lambda m: m.mined_nonrenewable_last_step,
+
+                "AvgAdaptiveEpsilon": lambda m: (
+                    sum(getattr(a, "rl_epsilon", 0.0) for a in m.schedule.agents
+                        if getattr(a, "ideology", "") == "adaptive") /
+                    max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
+                ),
+                "AvgAdaptiveReward": lambda m: (
+                    sum(getattr(a, "last_reward", 0.0) for a in m.schedule.agents
+                        if getattr(a, "ideology", "") == "adaptive") /
+                    max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
+                ),
             }
         )
         self.datacollector.collect(self)

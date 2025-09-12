@@ -12,9 +12,9 @@ r&d/ innovation
 # ideology
 #SELECTED_IDEOLOGY = "capitalist" 
 #SELECTED_IDEOLOGY = "green_capitalist"
-SELECTED_IDEOLOGY = "socialist"
+#SELECTED_IDEOLOGY = "socialist"
 #SELECTED_IDEOLOGY = "green_socialist"
-#SELECTED_IDEOLOGY = "adaptive"
+SELECTED_IDEOLOGY = "adaptive"
 
 model_params["ideology"] = SELECTED_IDEOLOGY
 
