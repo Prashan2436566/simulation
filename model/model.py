@@ -146,6 +146,11 @@ class IdeologyModel(Model):
         self._scatter_resources("renewable", 100)
         self._scatter_resources("nonrenewable", 100)
 
+        #adaptive RL params
+        self.max_adaptive_respawns = 0
+        self.q_init = 15.0  # optimistic initial Q for adaptive agents (≈ 1/(1-γ) with γ=0.95 → 20)
+
+
         # Spawn agents
         for _ in range(num_agents):
             agent = IdeologyAgent(self.next_id(), self, ideology)

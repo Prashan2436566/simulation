@@ -161,7 +161,7 @@ class IdeologyAgent(Agent):
             # survival + faster feedback
             self.energy = 20.0            # stronger start
             self.emergency_floor = 6.0    # earlier emergency
-            self.adaptive_mine_ticks = 2  # shorter bursts => quicker rewards
+            self.adaptive_mine_ticks = 3  # shorter bursts => quicker rewards
 
             # RL knobs
             self.rl_alpha = 0.2
@@ -180,6 +180,22 @@ class IdeologyAgent(Agent):
             ]
             self._last_state = None
             self._last_action = None
+
+            # --- respawn-with-memory bookkeeping ---
+            self.episodes = 0
+            self.max_adaptive_respawns = getattr(self.model, "max_adaptive_respawns", float("inf"))
+            self.q_init = getattr(self.model, "q_init", 15.0)
+
+            # (optional) terminal-only Monte-Carlo credit at death; off by default
+            self.use_mc_terminal_updates = False
+            self.episode_traj = []  # list of (state, action) tuples for MC updates
+
+            # Neutralize built-in renewable bias for adaptive (unless user sets it)
+            self.renewable_bias = getattr(self.model, "adaptive_renewable_bias", 0)
+
+            # For SMDP/option credit during mining
+            self._mine_k = 0
+            self._mine_accum_r = 0.0
 
     # ---------- COMMON PER-TICK ----------
     def step(self) -> None:
@@ -200,9 +216,77 @@ class IdeologyAgent(Agent):
         upkeep = 0.3 if self.ideology == "adaptive" else 0.5
         self.energy -= upkeep
         if self.energy <= 0:
-            self.model.grid.remove_agent(self)
-            self.model.schedule.remove(self)
+            if self.ideology == "adaptive":
+                if getattr(self, "use_mc_terminal_updates", False):
+                    self._mc_update_on_death()
+                if self.episodes < getattr(self, "max_adaptive_respawns", float("inf")):
+                    self.episodes += 1
+                    self._respawn_with_memory()
+                    return
+                self._remove_self()
+                return
+
+            self._remove_self()
             return
+
+    def _remove_self(self):
+        try:
+            self.model.grid.remove_agent(self)
+        except Exception:
+            pass
+        try:
+            self.model.schedule.remove(self)
+        except Exception:
+            pass
+
+    def _find_spawn_cell(self, max_tries: int = 1000):
+        """Find a random empty cell; fallback to center if none found."""
+        W, H = self.model.width, self.model.height
+        for _ in range(max_tries):
+            pos = (random.randrange(W), random.randrange(H))
+            try:
+                if self.model.grid.is_cell_empty(pos):
+                    return pos
+            except Exception:
+                if len(self.model.grid.get_cell_list_contents([pos])) == 0:
+                    return pos
+        return (W // 2, H // 2)
+
+    def _respawn_with_memory(self):
+        inherited_q   = self.q_table
+        inherited_eps = self.rl_epsilon
+        inherited_eps_count = self.episodes
+        inherited_cap = self.max_adaptive_respawns
+        inherited_mc  = self.use_mc_terminal_updates
+
+        self._remove_self()
+
+        succ = IdeologyAgent(self.model.next_id(), self.model, ideology="adaptive")
+        succ.q_table = inherited_q
+        succ.rl_epsilon = max(succ.rl_epsilon_min, inherited_eps * 0.98)
+        succ.episodes = inherited_eps_count
+        succ.max_adaptive_respawns = inherited_cap
+        succ.use_mc_terminal_updates = inherited_mc
+
+        spawn_pos = self._find_spawn_cell()
+        self.model.grid.place_agent(succ, spawn_pos)
+        self.model.schedule.add(succ)
+
+    def _mc_update_on_death(self):
+        """
+        Monte Carlo credit assignment with terminal-only reward for survival.
+        If an episode lasted T steps, each (s_t, a_t) gets return G_t = γ^(T-1-t).
+        Only used if self.use_mc_terminal_updates is True.
+        """
+        traj = getattr(self, "episode_traj", [])
+        if not traj:
+            return
+        T = len(traj)
+        for t, (s, a) in enumerate(traj):
+            G = (self.rl_gamma ** (T - 1 - t)) * 1.0
+            row = self._qrow(s)
+            row[a] += self.rl_alpha * (G - row[a])
+        self.episode_traj.clear()
 
     # ---------- MAINTENANCE HELPERS ----------
     def _nearest_degraded_patch(self):
@@ -284,36 +368,51 @@ class IdeologyAgent(Agent):
         return False
 
     # ---------- RL helpers (Adaptive) ----------
+    def _expected_net_here(self, p) -> float:
+        """Expected one-burst net on current tile, including setup if unpaid."""
+        if p is None:
+            return -999.0
+        setup_due  = (p.resource_type == "renewable") and (p.unique_id not in self.renewable_setup_paid)
+        setup_cost = self.model.cost_renewable_setup if setup_due else 0.0
+        if p.resource_type == "renewable":
+            desired, op_cost = self.model.yield_per_mine_renewable, self.model.cost_extract_renewable
+        else:
+            desired, op_cost = self.model.yield_per_mine_nonrenewable, self.model.cost_extract_nonrenewable
+        take = min(getattr(p, "amount", 0), desired)
+        return take - op_cost - setup_cost
+
     def _state_from_obs(self) -> tuple:
         """
         Compact, discrete state for tabular Q-learning.
-        Uses only local info + coarse distances so the table stays small.
+        Now also encodes: expected net yield on this tile, and global nonrenewable scarcity.
         """
-        # energy bin
+        # ---- energy bin
         e = self.energy
         if e <= 3: e_bin = 0
         elif e <= 7: e_bin = 1
         elif e <= 12: e_bin = 2
         else: e_bin = 3
 
-        # current tile info
+        # ---- what's under my feet?
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
         hub_here = any(getattr(o, "built", False) for o in cell if isinstance(o, EnergyHub))
 
         if patch is None:
-            tile_type = 0  # empty
+            tile_type = 0      # empty
             amt_bin = 0
             scar_bin = 0
             degraded = 0
         else:
             if patch.resource_type == "renewable":
-                if getattr(patch, "under_maintenance", False) or getattr(patch, "degraded", False) or getattr(patch, "is_degraded", False):
+                if (getattr(patch, "under_maintenance", False)
+                    or getattr(patch, "degraded", False)
+                    or getattr(patch, "is_degraded", False)):
                     tile_type = 2  # renewable but unusable
                 else:
                     tile_type = 1  # healthy renewable
             else:
-                tile_type = 3  # nonrenewable
+                tile_type = 3      # nonrenewable
 
             # amount bin
             a = getattr(patch, "amount", 0)
@@ -326,9 +425,13 @@ class IdeologyAgent(Agent):
             scar = getattr(patch, "scar_level", 0.0)
             scar_bin = int(min(3, math.floor(scar)))
 
-            degraded = 1 if (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)) else 0
+            degraded = 1 if (
+                getattr(patch, "degraded", False)
+                or getattr(patch, "under_maintenance", False)
+                or getattr(patch, "is_degraded", False)
+            ) else 0
 
-        # distance to nearest renewable / nonrenewable (coarse)
+        # ---- coarse distances to nearest renewable / nonrenewable
         def dist_bin_to(rtype: str):
             pos, d, p = self._nearest_patch(rtype)
             if p is None:
@@ -341,11 +444,34 @@ class IdeologyAgent(Agent):
         d_ren = dist_bin_to("renewable")
         d_non = dist_bin_to("nonrenewable")
 
-        return (e_bin, tile_type, amt_bin, scar_bin, degraded, int(hub_here), d_ren, d_non)
+        # ---- expected net if we mine HERE now (includes setup if unpaid)
+        exp_net = self._expected_net_here(patch)
+        if exp_net <= -2:   net_bin = 0
+        elif exp_net <= 0:  net_bin = 1
+        elif exp_net <= 2:  net_bin = 2
+        elif exp_net <= 4:  net_bin = 3
+        else:               net_bin = 4
+
+        # ---- global scarcity of nonrenewables
+        non_count = len(self.model.nonrenewable_locations)
+        if non_count == 0:        non_bin = 0
+        elif non_count <= 30:     non_bin = 1
+        elif non_count <= 70:     non_bin = 2
+        else:                     non_bin = 3
+
+        # return the extended state
+        return (
+            e_bin, tile_type, amt_bin, scar_bin, degraded, int(hub_here),
+            d_ren, d_non, net_bin, non_bin
+        )
 
     def _qrow(self, state: tuple) -> dict:
         if state not in self.q_table:
-            self.q_table[state] = {a: 0.0 for a in self.RL_ACTIONS}
+            q0 = getattr(self, "q_init", 15.0)
+            row = {a: q0 for a in self.RL_ACTIONS}
+            if "idle" in row:
+                row["idle"] = -1.0
+            self.q_table[state] = row
         return self.q_table[state]
 
     def _choose_action(self, state: tuple) -> str:
@@ -365,7 +491,7 @@ class IdeologyAgent(Agent):
         td_target = r + self.rl_gamma * self._best_q(s2)
         row[a] += self.rl_alpha * (td_target - row[a])
 
-    # Unified reward function
+    # --- Survival-first reward for the ADAPTIVE agent ---
     def _calc_reward(
         self,
         action: str,
@@ -373,59 +499,27 @@ class IdeologyAgent(Agent):
         post_e: float,
         patch=None,
         event_bonus: float = 0.0,
-        renewable_bonus: float = 0.5,
-        nonrenewable_bonus: float = 1.5,
-        idle_penalty: float = -0.05,
-        bad_action_penalty: float = -0.2,
-        alive_bonus: float = 0.15,
+        renewable_bonus: float = 0.0,
+        nonrenewable_bonus: float = 0.0,
+        idle_penalty: float = 0.0,
+        bad_action_penalty: float = 0.0,
+        alive_bonus: float = 0.0,
         max_abs_reward: float = 20.0,
     ) -> float:
         """
-        Shaped reward:
-          - Big positive for gaining energy when low, big negative for losing energy near death
-          - Small per-step alive bonus
-          - Action bonuses (mine/repair), with larger bonus for nonrenewables if desired
-          - Clamp to keep Q updates stable
+        Survival-first reward:
+          +1 if, after this action, the agent would still be alive AFTER next upkeep,
+           0 otherwise (optionally add a small death penalty).
         """
-        de = post_e - pre_e
+        UPCOMING_UPKEEP = 0.3
+        USE_DEATH_PENALTY = True
+        DEATH_PENALTY = -3.0
 
-        # Asymmetric energy scaling
-        if de > 0:
-            if pre_e <= 6:      energy_term = de * 4.0
-            elif pre_e <= 10:   energy_term = de * 2.5
-            else:               energy_term = de * 1.5
+        will_survive = (self.energy - UPCOMING_UPKEEP) > 0.0
+        if will_survive:
+            return 1.0
         else:
-            if post_e <= 3:     energy_term = de * 5.0
-            elif post_e <= 8:   energy_term = de * 2.5
-            else:               energy_term = de * 1.0
-
-        # Milestones
-        milestone = 0.0
-        if pre_e < 15 <= post_e: milestone += 8.0
-        if pre_e < 20 <= post_e: milestone += 10.0
-
-        # Action-specific shaping
-        action_term = 0.0
-        if action == "mine":
-            if de > 0:
-                action_term += 3.0
-                if patch is not None:
-                    if getattr(patch, "resource_type", None) == "nonrenewable":
-                        action_term += nonrenewable_bonus
-                    elif getattr(patch, "resource_type", None) == "renewable":
-                        action_term += renewable_bonus
-            else:
-                action_term += bad_action_penalty
-        elif action == "repair":
-            action_term += 2.0
-        elif action == "idle":
-            action_term += idle_penalty
-
-        total = energy_term + milestone + action_term + event_bonus + alive_bonus
-
-        # Clamp for stability
-        total = max(-max_abs_reward, min(max_abs_reward, total))
-        return total
+            return 0.0 + (DEATH_PENALTY if USE_DEATH_PENALTY else 0.0)
 
     # ---------- CAPITALIST ----------
     def capitalist_step(self) -> None:
@@ -795,118 +889,146 @@ class IdeologyAgent(Agent):
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
 
-    # ---------- Adaptive (Tabular Q-learning) ----------
+    # ---------- Adaptive (Tabular Q-learning; time-survival reward) ----------
     def adaptive_step(self) -> None:
         """
-        1) If finishing a mining burst, learn from it and return
-        2) Emergency beeline when low
-        3) Normal RL cycle: choose action, execute, compute shaped reward, update Q
+        Reward = 1 for each tick survived (i.e., if energy after NEXT upkeep > 0),
+        0 on the tick before death (plus small death penalty).
+        SMDP update for multi-tick mining bursts.
         """
+        UPCOMING_UPKEEP = 0.3
+        USE_DEATH_PENALTY = True
+        DEATH_PENALTY = -3.0
 
-        # If we're already mining, just resolve it and learn
+        def survival_reward():
+            will_survive = (self.energy - UPCOMING_UPKEEP) > 0
+            return 1.0 if will_survive else (0.0 + (DEATH_PENALTY if USE_DEATH_PENALTY else 0.0))
+
+        # ----------------------------
+        # 1) Resolve ongoing mining (accumulate discounted rewards per tick)
+        # ----------------------------
         if self.mining:
-            pre_e = self.energy
+            # accumulate survival reward for this mining tick
+            self._mine_k += 1
+            self._mine_accum_r += (self.rl_gamma ** (self._mine_k - 1)) * survival_reward()
+
+            # finish burst?
             self.mining_counter -= 1
             if self.mining_counter <= 0:
                 cell = self.model.grid.get_cell_list_contents([self.pos])
                 patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+
                 if patch:
-                    # pay setup once on renewables
+                    # pay renewable setup once if needed
                     if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
                         if self.energy >= self.model.cost_renewable_setup:
                             self.energy -= self.model.cost_renewable_setup
                             self.renewable_setup_paid.add(patch.unique_id)
                         else:
-                            self.mining = False
-                            self.mining_target = None
-                            return
-
-                    if patch.resource_type == "renewable":
-                        desired = self.model.yield_per_mine_renewable
-                        op_cost = self.model.cost_extract_renewable
-                    else:
-                        desired = self.model.yield_per_mine_nonrenewable
-                        op_cost = self.model.cost_extract_nonrenewable
-
-                    gained = patch.harvest(desired)
-                    net = gained - op_cost
-                    self.energy += net
-                    if net > 0:
-                        self.total_collected_energy += net
-
-                    # remove depleted nonrenewable
-                    if patch.amount <= 0 and patch.resource_type == "nonrenewable":
-                        try:
-                            self.model.grid.remove_agent(patch)
-                            self.model.schedule.remove(patch)
-                        except Exception:
-                            pass
-                        try:
-                            if patch.pos in self.model.nonrenewable_locations:
-                                self.model.nonrenewable_locations.remove(patch.pos)
-                        except ValueError:
+                            # couldn't pay; abort mining (still do SMDP update below)
                             pass
 
-                # learning after finishing the mining burst
-                post_e = self.energy
-                reward = self._calc_reward(
-                    action="mine",
-                    pre_e=pre_e,
-                    post_e=post_e,
-                    patch=patch
-                )
+                    # do the actual harvest (if setup OK or nonrenewable)
+                    if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
+                        if patch.resource_type == "renewable":
+                            desired = self.model.yield_per_mine_renewable
+                            op_cost = self.model.cost_extract_renewable
+                        else:
+                            desired = self.model.yield_per_mine_nonrenewable
+                            op_cost = self.model.cost_extract_nonrenewable
+
+                        gained = patch.harvest(desired)
+                        net = gained - op_cost
+                        self.energy += net
+                        if net > 0:
+                            self.total_collected_energy += net
+
+                        # remove depleted nonrenewable
+                        if patch.amount <= 0 and patch.resource_type == "nonrenewable":
+                            try:
+                                self.model.grid.remove_agent(patch)
+                                self.model.schedule.remove(patch)
+                            except Exception:
+                                pass
+                            try:
+                                if patch.pos in self.model.nonrenewable_locations:
+                                    self.model.nonrenewable_locations.remove(patch.pos)
+                            except ValueError:
+                                pass
+
+                # SMDP Q-update for the staged (state, "mine")
                 if self._last_state is not None and self._last_action is not None:
                     s2 = self._state_from_obs()
-                    self._update_q(self._last_state, self._last_action, reward, s2)
+                    k  = max(1, self._mine_k)
+                    r_k = self._mine_accum_r
+                    row = self._qrow(self._last_state)
+                    td_target = r_k + (self.rl_gamma ** k) * self._best_q(s2)
+                    row[self._last_action] += self.rl_alpha * (td_target - row[self._last_action])
                     self._last_state, self._last_action = None, None
 
                 self.mining = False
                 self.mining_target = None
+                self._mine_k = 0
+                self._mine_accum_r = 0.0
             return
 
-        # ===== EMERGENCY OVERRIDE: beeline to food when low =====
+        # -----------------------------------
+        # 2) Emergency: go to nearest positive-net patch (R or NR)
+        # -----------------------------------
         if self.energy <= max(self.emergency_floor, 6.0):
-            pos_n, d_n, pn = self._nearest_patch("nonrenewable")
-            target_pos, target_patch = None, None
-            if pn is not None and pn.amount > 0:
-                target_pos, target_patch = pos_n, pn
-            else:
-                pos_r, d_r, pr = self._nearest_patch("renewable")
-                if pr is not None and (not getattr(pr, "degraded", False)) and (not getattr(pr, "under_maintenance", False)) and (not getattr(pr, "is_degraded", False)) and pr.amount > 0:
-                    target_pos, target_patch = pos_r, pr
-
-            if target_patch is not None and target_pos is not None:
-                if self.pos != target_pos:
-                    self.move_towards(target_pos, speed=2)  # hurry
+            candidates = []
+            for rtype in ("nonrenewable", "renewable"):
+                pos, _, p = self._nearest_patch(rtype)
+                if p and getattr(p, "amount", 0) > 0 and not (
+                    getattr(p, "degraded", False) or getattr(p, "under_maintenance", False) or getattr(p, "is_degraded", False)
+                ):
+                    en = self._expected_net_here(p)
+                    candidates.append((pos, p, en))
+            if candidates:
+                positives = [c for c in candidates if c[2] > 0]
+                pool = positives if positives else candidates
+                pos, patch, _ = min(pool, key=lambda c: self.manhattan_distance(self.pos, c[0]))
+                if self.pos != pos:
+                    self.move_towards(pos, speed=2)
                     return
-                # on target: start short mining for quicker reward
+                # start short mining burst; stage SMDP update on completion
                 self.mining = True
                 self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
-                self.mining_target = target_patch
+                self.mining_target = patch
                 self._last_state = self._state_from_obs()
                 self._last_action = "mine"
+                self._mine_k = 0
+                self._mine_accum_r = 0.0
                 return
-        # ===== END EMERGENCY =====
 
-        # --- Normal RL cycle ---
+        # ----------------------------
+        # 3) Normal RL step
+        # ----------------------------
         s = self._state_from_obs()
 
-        # If low energy (but not in hard emergency), limit to move/mine
-        if self.energy <= 5.0:
-            action_space = ["move_N", "move_S", "move_E", "move_W", "mine"]
-        else:
-            action_space = self.RL_ACTIONS
+        low_energy = (self.energy <= 5.0)
+        action_space = ["move_N", "move_S", "move_E", "move_W", "mine"] if low_energy else self.RL_ACTIONS
 
-        # ε-greedy over (possibly) restricted action space
         if random.random() < self.rl_epsilon:
             a = random.choice(action_space)
         else:
             row = self._qrow(s)
-            a = max(action_space, key=lambda k: row[k])
+            vals = [row[x] for x in action_space]
+            maxv, minv = max(vals), min(vals)
+            if (maxv - minv) < 1e-6:
+                a = self._heuristic_best_action(allow_idle=("idle" in action_space), low_energy=low_energy)
+                if a not in action_space:
+                    a = "mine" if "mine" in action_space else random.choice([m for m in action_space if m.startswith("move_")])
+            else:
+                best = [x for x in action_space if row[x] == maxv]
+                a = random.choice(best)
 
-        pre_energy = self.energy
-        did_event_bonus = 0.0
-        acted_patch = None  # for reward shaping
+        # If we’re already on a usable patch, mine only if net>0 (or emergency buffer)
+        if self._usable_here():
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch_here = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+            if self._expected_net_here(patch_here) > 0 or self.energy <= self.emergency_floor + 1:
+                a = "mine"
 
         # Execute action
         if a.startswith("move_"):
@@ -915,23 +1037,36 @@ class IdeologyAgent(Agent):
             elif a == "move_S": dy = -1
             elif a == "move_E": dx = 1
             elif a == "move_W": dx = -1
-            target = ((self.pos[0] + dx) % self.model.width, (self.pos[1] + dy) % self.model.height)
+            target = (self.pos[0] + dx, self.pos[1] + dy)
             self.move_towards(target, speed=1)
 
         elif a == "mine":
             cell = self.model.grid.get_cell_list_contents([self.pos])
             patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
-            if patch and not getattr(patch, "degraded", False) and not getattr(patch, "under_maintenance", False) and not getattr(patch, "is_degraded", False) and patch.amount > 0:
-                self.mining = True
-                self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)  # shorter burst
-                self.mining_target = patch
-                self._last_state, self._last_action = s, a
-                acted_patch = patch
-            else:
-                did_event_bonus += -0.2  # tried to mine an unusable tile
+            if patch and not getattr(patch, "degraded", False) and not getattr(patch, "under_maintenance", False) \
+               and not getattr(patch, "is_degraded", False) and patch.amount > 0:
+
+                # handle renewable setup up front
+                if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                    setup = self.model.cost_renewable_setup
+                    if self.energy < setup:
+                        pass  # can't start yet; fall through to update below
+                    else:
+                        self.energy -= setup
+                        self.renewable_setup_paid.add(patch.unique_id)
+
+                # start burst if allowed
+                if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
+                    self.mining = True
+                    self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
+                    self.mining_target = patch
+                    self._last_state, self._last_action = s, a
+                    self._mine_k = 0
+                    self._mine_accum_r = 0.0
+                    return
+            # else: invalid mine attempt; we’ll just update below
 
         elif a == "repair":
-            # Be conservative: only repair if well above cost
             if self.energy >= 18.0:
                 cell = self.model.grid.get_cell_list_contents([self.pos])
                 patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
@@ -943,31 +1078,95 @@ class IdeologyAgent(Agent):
                         patch.is_degraded = False
                         patch.degraded = False
                         patch.under_maintenance = False
-                    did_event_bonus += 3.0
-                    acted_patch = patch
-                else:
-                    did_event_bonus += -0.2
-            else:
-                did_event_bonus += -0.2  # too risky when low energy
-        else:
-            # idle
-            pass
 
-        post_energy = self.energy
-        reward = self._calc_reward(
-            action=a,
-            pre_e=pre_energy,
-            post_e=post_energy,
-            patch=acted_patch,
-            event_bonus=did_event_bonus
-        )
-
+        # 1-step Q-learning update with survival reward
         s2 = self._state_from_obs()
-        self._update_q(s, a, reward, s2)
+        r = survival_reward()
+        self._update_q(s, a, r, s2)
 
         # ε decay
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
+
+    def _usable_here(self) -> bool:
+        """True if the tile underfoot can be mined right now."""
+        cell = self.model.grid.get_cell_list_contents([self.pos])
+        patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+        if not patch:
+            return False
+        if getattr(patch, "amount", 0) <= 0:
+            return False
+        if (getattr(patch, "degraded", False)
+            or getattr(patch, "under_maintenance", False)
+            or getattr(patch, "is_degraded", False)):
+            return False
+        # renewable requires setup paid or affordable now
+        if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+            if self.energy < self.model.cost_renewable_setup:
+                return False
+        return True
+
+    def _nearest_usable_patch_any(self):
+        """Nearest patch we can ACTUALLY exploit now (filters: amount>0, not degraded, setup affordable, not crowded)."""
+        best = (None, 10**9, None)
+        for rtype, locs in (("renewable", self.model.renewable_locations),
+                            ("nonrenewable", self.model.nonrenewable_locations)):
+            for pos in list(locs):
+                cell = self.model.grid.get_cell_list_contents([pos])
+
+                # skip if another agent is already standing there
+                if any(isinstance(a, IdeologyAgent) and a is not self for a in cell):
+                    continue
+
+                patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == rtype), None)
+                if not patch:
+                    continue
+                if getattr(patch, "amount", 0) <= 0:
+                    continue
+
+                # renewable must be usable now
+                if rtype == "renewable":
+                    if (getattr(patch, "degraded", False)
+                        or getattr(patch, "under_maintenance", False)
+                        or getattr(patch, "is_degraded", False)):
+                        continue
+                    # require setup affordable OR already paid
+                    if patch.unique_id not in self.renewable_setup_paid and self.energy < self.model.cost_renewable_setup:
+                        continue
+
+                d = self.manhattan_distance(self.pos, pos)
+                if rtype == "renewable":
+                    d = max(0, d - self.renewable_bias)  # adaptive can set this to 0
+                if d < best[1]:
+                    best = (pos, d, patch)
+        return best
+
+    def _heuristic_best_action(self, allow_idle: bool, low_energy: bool) -> str:
+        """Heuristic fallback: mine if standing on a usable patch, else step toward nearest usable patch."""
+        cell = self.model.grid.get_cell_list_contents([self.pos])
+        patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+        usable_here = (
+            patch is not None
+            and getattr(patch, "amount", 0) > 0
+            and not (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False))
+            and (patch.resource_type != "renewable"
+                or (patch.unique_id in self.renewable_setup_paid or self.energy >= self.model.cost_renewable_setup))
+        )
+        if usable_here:
+            # Only mine if it’s actually good (or you’re desperate)
+            if self._expected_net_here(patch) > 0 or self.energy <= self.emergency_floor + 1:
+                return "mine"
+
+        target_pos, dist, _ = self._nearest_usable_patch_any()
+        if target_pos is not None and dist > 0:
+            cx, cy = self.pos
+            tx, ty = target_pos
+            if abs(tx - cx) >= abs(ty - cy):
+                return "move_E" if tx > cx else "move_W" if tx < cx else ("move_N" if ty > cy else "move_S")
+            else:
+                return "move_N" if ty > cy else "move_S" if ty < cy else ("move_E" if tx > cx else "move_W")
+
+        return "idle" if allow_idle and not low_energy else random.choice(["move_N", "move_S", "move_E", "move_W"])
 
     # ---------- helpers ----------
     def _maybe_build_hub_or_mine(self):
@@ -1036,21 +1235,28 @@ class IdeologyAgent(Agent):
             self.energy -= share_i
 
     def move_towards(self, target_pos, speed: int = 1) -> None:
-        curr_x, curr_y = self.pos
-        target_x, target_y = target_pos
-        dx = target_x - curr_x
-        dy = target_y - curr_y
+        x, y = self.pos
+        tx, ty = target_pos
         for _ in range(speed):
-            step_x = curr_x + (1 if dx > 0 else -1 if dx < 0 else 0)
-            step_y = curr_y + (1 if dy > 0 else -1 if dy < 0 else 0)
-            new_pos = (step_x, step_y)
-            if not self.model.grid.out_of_bounds(new_pos):
-                self.model.grid.move_agent(self, new_pos)
-                curr_x, curr_y = new_pos
-                dx = target_x - curr_x
-                dy = target_y - curr_y
-            else:
+            dx = tx - x
+            dy = ty - y
+            if dx == 0 and dy == 0:
                 break
+            # move along the dominant axis ONLY (Manhattan step)
+            if abs(dx) >= abs(dy):
+                nx, ny = x + (1 if dx > 0 else -1 if dx < 0 else 0), y
+            else:
+                nx, ny = x, y + (1 if dy > 0 else -1 if dy < 0 else 0)
+
+            # wrap if torus, else stop at boundary
+            if getattr(self.model.grid, "torus", False):
+                nx %= self.model.width
+                ny %= self.model.height
+            elif self.model.grid.out_of_bounds((nx, ny)):
+                break
+
+            self.model.grid.move_agent(self, (nx, ny))
+            x, y = nx, ny
 
     def manhattan_distance(self, p1, p2) -> int:
         return abs(p1[0] - p2[0]) + abs(p1[1] - p2[1])
