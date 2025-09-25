@@ -16,6 +16,7 @@ def agent_portrayal(agent):
             "green_socialist": "brown",
             "communist": "red",
             "adaptive": "purple",
+            "adaptive_direct": "magenta",
         }
         color = colour_map.get(getattr(agent, "ideology", "capitalist"), "blue")
         energy_norm = min(max(agent.energy / 10, 0), 1) if hasattr(agent, "energy") else 0.5
@@ -113,6 +114,8 @@ chart_ideo = ChartModule(
         {"Label": "Ideology_socialist", "Color": "orange"},
         {"Label": "Ideology_green_socialist", "Color": "brown"},
         {"Label": "Ideology_adaptive", "Color": "purple"},
+        {"Label": "Ideology_adaptive_direct", "Color": "magenta"},
+
     ],
     data_collector_name="datacollector",
 )

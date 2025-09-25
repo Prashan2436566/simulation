@@ -166,7 +166,7 @@ class IdeologyAgent(Agent):
             # RL knobs
             self.rl_alpha = 0.2
             self.rl_gamma = 0.95
-            self.rl_epsilon = 0.3
+            self.rl_epsilon = 0.9
             self.rl_epsilon_min = 0.05
             self.rl_epsilon_decay = 0.995
 
@@ -197,6 +197,42 @@ class IdeologyAgent(Agent):
             self._mine_k = 0
             self._mine_accum_r = 0.0
 
+        elif ideology == "adaptive_direct":
+            # survival-focused, but with a simplified action space
+            self.energy = 20.0
+            self.emergency_floor = 6.0
+            self.adaptive_mine_ticks = 3
+
+            # RL knobs (reuse same defaults)
+            self.rl_alpha = 0.2
+            self.rl_gamma = 0.95
+            self.rl_epsilon = 0.3
+            self.rl_epsilon_min = 0.05
+            self.rl_epsilon_decay = 0.995
+
+            # tabular Q + limited action set
+            self.q_table: dict[tuple, dict[str, float]] = {}
+            self.RL_ACTIONS = [
+                "goto_nearest_non",
+                "goto_nearest_ren",
+                "mine",
+                "repair",
+            ]
+            self._last_state = None
+            self._last_action = None
+
+            # respawn-with-memory options (mirror adaptive)
+            self.episodes = 0
+            self.max_adaptive_respawns = getattr(self.model, "max_adaptive_respawns", float("inf"))
+            self.q_init = getattr(self.model, "q_init", 15.0)
+
+            self.use_mc_terminal_updates = False
+            self.episode_traj = []
+
+            # no built-in renewable bias unless you set it in the model
+            self.renewable_bias = getattr(self.model, "adaptive_renewable_bias", 0)
+
+
     # ---------- COMMON PER-TICK ----------
     def step(self) -> None:
         if self.ideology == "socialist":
@@ -209,6 +245,8 @@ class IdeologyAgent(Agent):
             self.socialist_green_step()
         elif self.ideology == "adaptive":
             self.adaptive_step()
+        elif self.ideology == "adaptive_direct":
+            self.adaptive_direct_step()
         else:
             self.capitalist_step()
 
@@ -1087,7 +1125,168 @@ class IdeologyAgent(Agent):
         # ε decay
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
+    def adaptive_direct_step(self) -> None:
+        """
+        Simpler RL: actions are high-level choices:
+        - goto_nearest_non: move one step toward the closest usable nonrenewable
+        - goto_nearest_ren: move one step toward the closest usable renewable
+        - mine: begin/continue a short mining burst if possible
+        - repair: repair a degraded renewable if on it (when healthy enough)
 
+        Reward = 1 per tick survived (energy after next upkeep > 0), else 0 (with small death penalty).
+        """
+        UPCOMING_UPKEEP = 0.3
+        USE_DEATH_PENALTY = True
+        DEATH_PENALTY = -3.0
+
+        def survival_reward():
+            return 1.0 if (self.energy - UPCOMING_UPKEEP) > 0 else (0.0 + (-3.0 if USE_DEATH_PENALTY else 0.0))
+
+        # 1) Resolve ongoing mining bursts (same as adaptive)
+        if self.mining:
+            self.mining_counter -= 1
+            if self.mining_counter <= 0:
+                cell = self.model.grid.get_cell_list_contents([self.pos])
+                patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+
+                if patch:
+                    # one-time renewable setup
+                    if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                        if self.energy >= self.model.cost_renewable_setup:
+                            self.energy -= self.model.cost_renewable_setup
+                            self.renewable_setup_paid.add(patch.unique_id)
+                        else:
+                            # abort burst; still do the Q update below
+                            pass
+
+                    # do harvest
+                    if patch.resource_type == "renewable":
+                        desired = self.model.yield_per_mine_renewable
+                        op_cost = self.model.cost_extract_renewable
+                    else:
+                        desired = self.model.yield_per_mine_nonrenewable
+                        op_cost = self.model.cost_extract_nonrenewable
+
+                    gained = patch.harvest(desired)
+                    net = gained - op_cost
+                    self.energy += net
+                    if net > 0:
+                        self.total_collected_energy += net
+
+                    # remove empty nonrenewable
+                    if patch.amount <= 0 and patch.resource_type == "nonrenewable":
+                        try:
+                            self.model.grid.remove_agent(patch)
+                            self.model.schedule.remove(patch)
+                        except Exception:
+                            pass
+                        try:
+                            if patch.pos in self.model.nonrenewable_locations:
+                                self.model.nonrenewable_locations.remove(patch.pos)
+                        except ValueError:
+                            pass
+
+                # Q update for previously staged (s,"mine")
+                if self._last_state is not None and self._last_action is not None:
+                    s2 = self._state_from_obs()
+                    r = survival_reward()
+                    self._update_q(self._last_state, self._last_action, r, s2)
+                    self._last_state, self._last_action = None, None
+
+                self.mining = False
+                self.mining_target = None
+            return
+
+        # 2) Emergency: beeline toward usable energy if very low
+        if self.energy <= max(self.emergency_floor, 6.0):
+            # prefer nonrenewable first for immediate yield
+            pos_n, _, pn = self._nearest_patch("nonrenewable")
+            tgt_pos, tgt_patch = (pos_n, pn) if (pn and pn.amount > 0) else (None, None)
+            if tgt_patch is None:
+                pos_r, _, pr = self._nearest_patch("renewable")
+                if pr and not (getattr(pr, "degraded", False) or getattr(pr, "under_maintenance", False) or getattr(pr, "is_degraded", False)) and pr.amount > 0:
+                    tgt_pos, tgt_patch = pos_r, pr
+
+            if tgt_patch is not None and tgt_pos is not None:
+                if self.pos != tgt_pos:
+                    self.move_towards(tgt_pos, speed=2)
+                    return
+                # start a short burst
+                self.mining = True
+                self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
+                self.mining_target = tgt_patch
+                self._last_state = self._state_from_obs()
+                self._last_action = "mine"
+                return
+
+        # 3) RL choose among the 4 actions
+        s = self._state_from_obs()
+
+        # ε-greedy on limited action set
+        if random.random() < self.rl_epsilon:
+            a = random.choice(self.RL_ACTIONS)
+        else:
+            row = self._qrow(s)
+            bestv = max(row[x] for x in self.RL_ACTIONS)
+            best = [x for x in self.RL_ACTIONS if row[x] == bestv]
+            a = random.choice(best)
+
+        # If we can actually mine here, override to "mine"
+        if self._usable_here():
+            a = "mine"
+
+        # Execute the chosen action
+        if a == "goto_nearest_non":
+            pos, _, patch = self._nearest_patch("nonrenewable")
+            if patch is not None and pos is not None and pos != self.pos:
+                self.move_towards(pos, speed=1)
+
+        elif a == "goto_nearest_ren":
+            pos, _, patch = self._nearest_patch("renewable")
+            if patch is not None and pos is not None and pos != self.pos:
+                self.move_towards(pos, speed=1)
+
+        elif a == "mine":
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+            if patch and not (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)) and patch.amount > 0:
+                if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                    setup = self.model.cost_renewable_setup
+                    if self.energy >= setup:
+                        self.energy -= setup
+                        self.renewable_setup_paid.add(patch.unique_id)
+                # start the burst only if setup is paid or not needed
+                if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
+                    self.mining = True
+                    self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
+                    self.mining_target = patch
+                    self._last_state, self._last_action = s, a
+                    return
+
+        elif a == "repair":
+            if self.energy >= 18.0:
+                cell = self.model.grid.get_cell_list_contents([self.pos])
+                patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
+                if patch and (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)):
+                    self.energy -= 10.0
+                    if hasattr(patch, "clear_degraded"):
+                        patch.clear_degraded()
+                    else:
+                        patch.is_degraded = False
+                        patch.degraded = False
+                        patch.under_maintenance = False
+
+        # Q update (survival-only reward)
+        s2 = self._state_from_obs()
+        r = survival_reward()
+        self._update_q(s, a, r, s2)
+
+        # ε decay
+        if self.rl_epsilon > self.rl_epsilon_min:
+            self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
+
+
+    
     def _usable_here(self) -> bool:
         """True if the tile underfoot can be mined right now."""
         cell = self.model.grid.get_cell_list_contents([self.pos])

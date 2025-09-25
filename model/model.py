@@ -165,6 +165,10 @@ class IdeologyModel(Model):
                 "Ideology_adaptive": lambda m: sum(
                     1 for a in m.schedule.agents if getattr(a, "ideology", "") == "adaptive"
                 ),
+                "Ideology_adaptive_direct": lambda m: sum(
+                    1 for a in m.schedule.agents if getattr(a, "ideology", "") == "adaptive_direct"
+                ),
+
 
                 "AvgEnergy": lambda m: m.average_energy(),
                 "CommunityPool": lambda m: m.community_pool,
