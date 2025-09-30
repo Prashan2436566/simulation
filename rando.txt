@@ -1,3 +1,6 @@
 create -> python -m venv venv  
 permssions -> Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 activate -> .\venv\Scripts\activate
+python main.py
+deactivate
+python batch_runner.py --ideology adaptive_direct --runs 10 --steps 300 --out_prefix exp1
