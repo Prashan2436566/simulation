@@ -148,7 +148,18 @@ class IdeologyModel(Model):
 
         #adaptive RL params
         self.max_adaptive_respawns = float("inf")
+        #self.max_adaptive_respawns = 0
         self.q_init = 15.0  # optimistic initial Q for adaptive agents (≈ 1/(1-γ) with γ=0.95 → 20)
+
+        # Totals that batch/visualization will read
+        self.mined_renewable_total = 0.0
+        self.mined_nonrenewable_total = 0.0
+
+        # Optional DQN diagnostics (so they exist from step 0)
+        self.dqn_replay_size = 0
+        self.dqn_last_loss = float("nan")
+        self.dqn_steps = 0
+        # self.dqn_eps is created when DQN lazy-inits; that's fine
 
 
         # Spawn agents
@@ -168,6 +179,13 @@ class IdeologyModel(Model):
                 "Ideology_adaptive_direct": lambda m: sum(
                     1 for a in m.schedule.agents if getattr(a, "ideology", "") == "adaptive_direct"
                 ),
+                "Ideology_communist": lambda m: sum(
+                    1 for a in m.schedule.agents if getattr(a, "ideology", "") == "communist"
+                ),
+                "Ideology_green_communist": lambda m: sum(
+                    1 for a in m.schedule.agents if getattr(a, "ideology", "") == "green_communist"
+                ),
+
 
 
                 "AvgEnergy": lambda m: m.average_energy(),
@@ -184,19 +202,21 @@ class IdeologyModel(Model):
                 "InfrastructureSites": lambda m: 0,  # placeholder
                 "AgentsAlive": lambda m: sum(1 for a in m.schedule.agents if hasattr(a, "energy")),
                 "GiniEnergy": lambda m: m.gini_energy(),
-                "MinedRenewable": lambda m: m.mined_renewable_last_step,
-                "MinedNonrenewable": lambda m: m.mined_nonrenewable_last_step,
-
-                "AvgAdaptiveEpsilon": lambda m: (
-                    sum(getattr(a, "rl_epsilon", 0.0) for a in m.schedule.agents
-                        if getattr(a, "ideology", "") == "adaptive") /
-                    max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
-                ),
                 "AvgAdaptiveReward": lambda m: (
                     sum(getattr(a, "last_reward", 0.0) for a in m.schedule.agents
-                        if getattr(a, "ideology", "") == "adaptive") /
-                    max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
+                        if getattr(a, "ideology", "") == "adaptive")
+                    / max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
                 ),
+                "MinedRenewable":    lambda m: m.mined_renewable_last_step,
+                "MinedNonrenewable": lambda m: m.mined_nonrenewable_last_step,
+                "AvgAdaptiveEpsilon": lambda m: (
+                    sum(getattr(a, "rl_epsilon", 0.0) for a in m.schedule.agents
+                        if getattr(a, "ideology", "") == "adaptive")
+                    / max(1, sum(1 for a in m.schedule.agents if getattr(a, "ideology","")=="adaptive"))
+                ),
+                "AvgAdaptiveEpsilonGlobal": lambda m: getattr(m, "dqn_eps", float("nan")),
+
+
             }
         )
         self.datacollector.collect(self)

@@ -14,9 +14,10 @@ def agent_portrayal(agent):
             "socialist": "orange",
             "green_capitalist": "teal",
             "green_socialist": "brown",
-            "communist": "red",
             "adaptive": "purple",
             "adaptive_direct": "magenta",
+            
+            
         }
         color = colour_map.get(getattr(agent, "ideology", "capitalist"), "blue")
         energy_norm = min(max(agent.energy / 10, 0), 1) if hasattr(agent, "energy") else 0.5

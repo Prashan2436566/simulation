@@ -3,6 +3,11 @@ import math
 import random
 import pickle,os
 
+import numpy as np
+try:
+    from .dqn import DQN, DQNConfig
+except Exception:
+    from .dqn import DQN, DQNConfig
 
 # =========================
 # Resource / Structure
@@ -156,47 +161,26 @@ class IdeologyAgent(Agent):
         self.coop_build_time = 2
         self.build_counter = 0
         self.intent_build = False
+        self.episodes = 0
+        self.deaths = 0
+        self.last_reward = 0.0
+
 
         # --- RL (Adaptive) setup ---
         if ideology == "adaptive":
-            # survival + faster feedback
-            self.energy = 20.0            # stronger start
-            self.emergency_floor = 6.0    # earlier emergency
-            self.adaptive_mine_ticks = 3  # shorter bursts => quicker rewards
+            # (your existing init stays)
+            self.energy = 20.0
+            self.emergency_floor = 6.0
+            self.adaptive_mine_ticks = 3
 
-            # RL knobs
-            self.rl_alpha = 0.2
+            # keep these for epsilon scheduling + consistency with tabular version
             self.rl_gamma = 0.95
-            self.rl_epsilon = 0.9
+            self.rl_epsilon = 0.90
             self.rl_epsilon_min = 0.05
             self.rl_epsilon_decay = 0.995
 
-            # tabular Q: dict[state] -> dict[action] -> value
-            self.model.shared_q_table: dict[tuple, dict[str, float]] = {}
+           
 
-            # available discrete actions
-            self.RL_ACTIONS = [
-                "idle", "move_N", "move_S", "move_E", "move_W",
-                "mine", "repair"
-            ]
-            self._last_state = None
-            self._last_action = None
-
-            # --- respawn-with-memory bookkeeping ---
-            self.episodes = 0
-            self.max_adaptive_respawns = getattr(self.model, "max_adaptive_respawns", float("inf"))
-            self.q_init = getattr(self.model, "q_init", 15.0)
-
-            # (optional) terminal-only Monte-Carlo credit at death; off by default
-            self.use_mc_terminal_updates = False
-            self.episode_traj = []  # list of (state, action) tuples for MC updates
-
-            # Neutralize built-in renewable bias for adaptive (unless user sets it)
-            self.renewable_bias = getattr(self.model, "adaptive_renewable_bias", 0)
-
-            # For SMDP/option credit during mining
-            self._mine_k = 0
-            self._mine_accum_r = 0.0
 
         elif ideology == "adaptive_direct":
             # survival-focused, but with a simplified action space
@@ -223,9 +207,10 @@ class IdeologyAgent(Agent):
             self._last_action = None
 
             # respawn-with-memory options (mirror adaptive)
-            self.episodes = 0
             self.max_adaptive_respawns = getattr(self.model, "max_adaptive_respawns", float("inf"))
             self.q_init = getattr(self.model, "q_init", 15.0)
+
+        
 
             self.use_mc_terminal_updates = False
             self.episode_traj = []
@@ -237,7 +222,54 @@ class IdeologyAgent(Agent):
             if os.path.exists(path):
                 self.model.shared_q_table = pickle.load(open(path, "rb"))
 
+        elif ideology == "communist":
+            # Collective-first defaults
+            self.energy = 12.0
+            self.emergency_floor = 6.0
 
+            # sharing: aggressive + wider radius
+            self.share_radius = 2
+            self.share_fraction = 1.0     # share (nearly) everything above a small floor
+            self.min_keep = 6.0
+
+            # strict personal cap; push surplus to pool
+            self.energy_cap = 10.0
+
+            # strong renewable bias & cooperative building
+            self.renewable_bias = 4
+            self.coop_build_time = 2
+            self.build_counter = 0
+            self.intent_build = False
+
+        elif ideology == "green_communist":
+            # Collective + eco-first defaults
+            self.energy = 12.0
+            self.emergency_floor = 6.0
+
+            # sharing: wide & strong
+            self.share_radius = 2
+            self.share_fraction = 1.0
+            self.min_keep = 6.0
+
+            # keep low personal cap; push surplus to pool
+            self.energy_cap = 10.0
+
+            # eco strictness
+            self.renewable_only = True      # NEVER mine nonrenewables
+            self.scar_avoid = 3.0           # avoid high-scar tiles
+            self.overuse_trigger = getattr(self.model, "renewable_overuse_trigger", 6)
+            self.cooldown_steps = getattr(self.model, "renewable_cooldown_steps", 5)
+
+            # coop building / repairs are prioritized
+            self.coop_build_time = 2
+            self.build_counter = 0
+            self.intent_build = False
+
+
+
+
+    def _vec_from_state(self, s_tuple):
+        return np.asarray(s_tuple, dtype=np.float32)
 
     # ---------- COMMON PER-TICK ----------
     def step(self) -> None:
@@ -250,7 +282,8 @@ class IdeologyAgent(Agent):
         elif self.ideology == "green_socialist":
             self.socialist_green_step()
         elif self.ideology == "adaptive":
-            self.adaptive_step()
+            #self.adaptive_step()
+            self.adaptive_dqn_step()
         elif self.ideology == "adaptive_direct":
             self.adaptive_direct_step()
         else:
@@ -263,7 +296,7 @@ class IdeologyAgent(Agent):
             if self.ideology == "adaptive":
                 if getattr(self, "use_mc_terminal_updates", False):
                     self._mc_update_on_death()
-                if self.episodes < getattr(self, "max_adaptive_respawns", float("inf")):
+                if getattr(self, "episodes", 0) < getattr(self.model, "max_adaptive_respawns", float("inf")):
                     self.episodes += 1
                     self._respawn_with_memory()
                     return
@@ -297,24 +330,80 @@ class IdeologyAgent(Agent):
         return (W // 2, H // 2)
 
     def _respawn_with_memory(self):
-        inherited_q   = self.model.shared_q_table
-        inherited_eps = self.rl_epsilon
-        inherited_eps_count = self.episodes
-        inherited_cap = self.max_adaptive_respawns
-        inherited_mc  = self.use_mc_terminal_updates
+        # Model-level cap (default: inf)
+        limit = getattr(self.model, "max_adaptive_respawns", float("inf"))
 
-        self._remove_self()
+        # Ensure counters exist
+        if not hasattr(self, "episodes"):
+            self.episodes = 0
+        if not hasattr(self, "deaths"):
+            self.deaths = 0
 
+        # Stop if we've hit the cap
+        if self.episodes >= limit:
+            return
+
+        # -------- Inherit state from the old body --------
+        inherited_eps = getattr(self, "rl_epsilon", 0.9)
+        inherited_eps_count = getattr(self, "episodes", 0)
+        inherited_mc = getattr(self, "use_mc_terminal_updates", False)
+
+        # (Q-table is shared on the model; keep using that single source of truth)
+        inherited_q = getattr(self.model, "shared_q_table", None)
+
+        # Update counters on the old body
+        self.deaths += 1
+        self.episodes += 1
+
+        # Remove the old body
+        self._remove_self()  # assumes your existing helper handles grid + schedule removal
+
+        # -------- Create successor --------
         succ = IdeologyAgent(self.model.next_id(), self.model, ideology="adaptive")
-        succ.q_table = inherited_q
-        succ.rl_epsilon = max(succ.rl_epsilon_min, inherited_eps * 0.98)
-        succ.episodes = inherited_eps_count
-        succ.max_adaptive_respawns = inherited_cap
+
+        # Carry over epsilon (slightly annealed down)
+        succ.rl_epsilon = max(getattr(succ, "rl_epsilon_min", 0.05), inherited_eps * 0.98)
+        succ.episodes = inherited_eps_count  # history
+        succ.deaths = getattr(self, "deaths", 0)
+
+        # Make sure successor obeys the same model-level cap
+        # (Don't store a per-agent cap; always read from model)
+        # succ.max_adaptive_respawns = limit  # <- not needed, read from self.model
+
+        # Carry over optional flags
         succ.use_mc_terminal_updates = inherited_mc
 
-        spawn_pos = self._find_spawn_cell()
+        # If your code sometimes expects a per-agent q_table pointer, keep it aligned
+        if inherited_q is not None:
+            try:
+                succ.q_table = inherited_q
+            except Exception:
+                pass
+
+        # -------- Place successor --------
+        spawn_pos = None
+        try:
+            spawn_pos = self._find_spawn_cell()
+        except Exception:
+            spawn_pos = None
+
+        # Fallback to a random empty cell if needed
+        if not spawn_pos:
+            # scan for an empty cell
+            for x in range(self.model.width):
+                for y in range(self.model.height):
+                    if not self.model.grid.get_cell_list_contents((x, y)):
+                        spawn_pos = (x, y)
+                        break
+                if spawn_pos:
+                    break
+            # last resort: clamp to (0,0)
+            if not spawn_pos:
+                spawn_pos = (0, 0)
+
         self.model.grid.place_agent(succ, spawn_pos)
         self.model.schedule.add(succ)
+
 
     def _mc_update_on_death(self):
         """
@@ -743,6 +832,8 @@ class IdeologyAgent(Agent):
 
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
+    
+    
 
     # ---------- GREEN CAPITALIST ----------
     def capitalist_green_step(self):
@@ -924,6 +1015,198 @@ class IdeologyAgent(Agent):
 
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
+
+
+
+    def adaptive_dqn_step(self) -> None:
+        """
+        DQN-driven adaptive policy. Lazy-inits the shared DQN the first time we step,
+        when self.pos is valid and _state_from_obs() is safe to call.
+        """
+        # ---------- 0) Lazy DQN init ----------
+        if not hasattr(self.model, "dqn"):
+            s0 = self._state_from_obs()                     # safe now: agent is placed
+            state_dim = len(self._vec_from_state(s0))
+
+            # shared discrete action set
+            self.model.dqn_actions = ["idle","move_N","move_S","move_E","move_W","mine","repair"]
+
+            cfg = DQNConfig(
+                state_dim=state_dim,
+                n_actions=len(self.model.dqn_actions),
+                lr=1e-3,
+                gamma=self.rl_gamma,        # keep your existing gamma (0.95)
+                batch_size=64,
+                buffer_size=100_000,
+                start_learning=1_000,
+                target_update_interval=1_000,
+                double_q=True,
+            )
+            self.model.dqn = DQN(cfg)
+            self.model.dqn_eps = self.rl_epsilon          # share epsilon across adaptive agents
+            self.model.dqn_global_step = 0
+
+        # ---------- 1) Build current state vector ----------
+        s = self._state_from_obs()
+        s_vec = self._vec_from_state(s)
+        successful_mine = False
+        gained_amount = 0.0
+        successful_repair = False
+
+        # ---------- 2) Pick action ----------
+        eps = getattr(self.model, "dqn_eps", 0.10)
+        a_idx = self.model.dqn.act(s_vec, eps)
+        actions = self.model.dqn_actions
+        a = actions[a_idx]
+
+        # basic safety: if very low energy, bias toward mining
+        #if self.energy <= 5.0 and a not in ("move_N","move_S","move_E","move_W","mine"):
+            #a = "mine"
+
+        # If we can mine here and net positive (or emergency), prefer "mine"
+        '''try:
+            if self._usable_here():
+                cell = self.model.grid.get_cell_list_contents([self.pos])
+                patch_here = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+                if patch_here is not None:
+                    if self._expected_net_here(patch_here) > 0 or self.energy <= self.emergency_floor + 1:
+                        a = "mine"
+        except Exception:
+            pass'''
+
+        # ---------- 3) Execute one tick of the chosen action ----------
+        energy_before = self.energy
+
+        if a.startswith("move_"):
+            dx, dy = 0, 0
+            if a == "move_N": dy = -1
+            elif a == "move_S": dy = 1
+            elif a == "move_E": dx = 1
+            elif a == "move_W": dx = -1
+            new_x = min(max(self.pos[0] + dx, 0), self.model.width - 1)
+            new_y = min(max(self.pos[1] + dy, 0), self.model.height - 1)
+            self.model.grid.move_agent(self, (new_x, new_y))
+
+        elif a == "mine":
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+            if patch and not (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)) and patch.amount > 0:
+                # renewable one-time setup
+                if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                    setup = self.model.cost_renewable_setup
+                    if self.energy >= setup:
+                        self.energy -= setup
+                        self.renewable_setup_paid.add(patch.unique_id)
+                # start a short burst if allowed
+                if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
+                    self.mining = True
+                    self.mining_counter = getattr(self, "adaptive_mine_ticks", 3)
+                    self.mining_target = patch
+
+                    # resolve one tick of mining immediately (1/3 of a burst)
+                    desired = self.model.yield_per_mine_renewable if patch.resource_type == "renewable" else self.model.yield_per_mine_nonrenewable
+                    op_cost = self.model.cost_extract_renewable if patch.resource_type == "renewable" else self.model.cost_extract_nonrenewable
+                    gained = patch.harvest(desired)
+                    mine_bonus = 0.05 * max(gained, 0.0)
+                    net = gained - op_cost
+                    self.energy += net
+
+                    if gained > 0:
+                        successful_mine = True
+                        gained_amount = float(gained)
+                    if not hasattr(self.model, "mined_renewable_total"):
+                        self.model.mined_renewable_total = 0.0
+                    if not hasattr(self.model, "mined_nonrenewable_total"):
+                        self.model.mined_nonrenewable_total = 0.0
+
+                    if patch.resource_type == "renewable":
+                        self.model.mined_renewable_total += float(max(gained, 0.0))
+                    else:
+                        self.model.mined_nonrenewable_total += float(max(gained, 0.0))
+                    if net > 0:
+                        self.total_collected_energy += net
+                    # remove empty nonrenewable
+                    if patch.amount <= 0 and patch.resource_type == "nonrenewable":
+                        try:
+                            self.model.grid.remove_agent(patch)
+                            self.model.schedule.remove(patch)
+                        except Exception:
+                            pass
+                        try:
+                            if patch.pos in self.model.nonrenewable_locations:
+                                self.model.nonrenewable_locations.remove(patch.pos)
+                        except ValueError:
+                            pass
+
+                    # the rest of the burst will continue on subsequent ticks
+                    self.mining_counter -= 1
+                    if self.mining_counter <= 0:
+                        self.mining = False
+                        self.mining_target = None
+
+        elif a == "repair":
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
+            if patch and (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)):
+                if self.energy >= getattr(self.model, "repair_energy_cost", 10.0):
+                    self.energy -= getattr(self.model, "repair_energy_cost", 10.0)
+                    if hasattr(patch, "clear_degraded"):
+                        patch.clear_degraded()
+                        successful_repair = True
+                    else:
+                        patch.is_degraded = False
+                        patch.degraded = False
+                        patch.under_maintenance = False
+
+        # ---------- 4) Upkeep, death, reward ----------
+        UPCOMING_UPKEEP = 0.3
+        DEATH_PEN = -3.0
+        SHAPING_K = 0.1
+
+        self.energy -= UPCOMING_UPKEEP
+        done = self.energy <= 0
+        if done:
+            self.energy = 0
+            try:
+                self.model.grid.remove_agent(self)
+                self.model.schedule.remove(self)
+                self.deaths += 1
+                self.episodes += 1
+
+            except Exception:
+                pass
+
+        survive_bonus = 1.0 if (self.energy > 0) else DEATH_PEN
+        dE = (self.energy - energy_before+UPCOMING_UPKEEP)
+        r = survive_bonus + SHAPING_K * dE
+
+        # small event bonuses
+        if successful_mine:
+            r += 0.05 * gained_amount
+        if successful_repair:
+            r += 0.5
+        self.last_reward = float(r)
+
+        # ---------- 5) Next state & learn ----------
+        s2 = self._state_from_obs() if not done else s  # if dead, s2 won’t be used after not_done=0
+        s2_vec = self._vec_from_state(s2)
+        self.model.dqn.push(s_vec, actions.index(a), float(r), s2_vec, done)
+
+        self.model.dqn_global_step += 1
+        _ = self.model.dqn.learn(self.model.dqn_global_step)
+
+        loss = self.model.dqn.learn(self.model.dqn_global_step)
+        if loss is not None:
+            self.model.dqn_last_loss = float(loss)
+        self.model.dqn_replay_size = int(self.model.dqn.replay.size)
+        self.model.dqn_steps = int(getattr(self.model, "dqn_steps", 0)) + 1
+
+
+        # ---------- 6) Epsilon decay & occasional save ----------
+        self.model.dqn_eps = max(self.rl_epsilon_min, self.model.dqn_eps * self.rl_epsilon_decay)
+        if (self.model.dqn_global_step % 5000) == 0:
+            self.model.dqn.save()
+
 
     # ---------- Adaptive (Tabular Q-learning; time-survival reward) ----------
     def adaptive_step(self) -> None:

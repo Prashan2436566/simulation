@@ -1,0 +1,16 @@
+,mean,std
+Ideology_adaptive,15.0,0.0
+Ideology_adaptive_direct,0.0,0.0
+AvgEnergy,10.319999999999984,1.2334034014130533
+CommunityPool,0.0,0.0
+TotalScar,0.0,0.0
+Renewables,100.0,0.0
+NonRenewables,100.0,0.0
+InfrastructureSites,0.0,0.0
+AgentsAlive,15.0,0.0
+GiniEnergy,0.3173298391828193,0.04568613317932291
+AvgAdaptiveReward,0.9533333333333334,0.04499657051403682
+MinedRenewable,0.4,1.2649110640673518
+MinedNonrenewable,0.0,0.0
+AvgAdaptiveEpsilon,0.5597988305252839,0.0017096785148131722
+AvgAdaptiveEpsilonGlobal,0.05,0.0
