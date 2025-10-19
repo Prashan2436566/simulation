@@ -147,7 +147,7 @@ class IdeologyModel(Model):
         self._scatter_resources("nonrenewable", 100)
 
         #adaptive RL params
-        self.max_adaptive_respawns = 0
+        self.max_adaptive_respawns = float("inf")
         self.q_init = 15.0  # optimistic initial Q for adaptive agents (≈ 1/(1-γ) with γ=0.95 → 20)
 
 
@@ -200,6 +200,8 @@ class IdeologyModel(Model):
             }
         )
         self.datacollector.collect(self)
+        self.shared_q_table = {}
+
 
     # ---------- world setup ----------
     def _scatter_resources(self, resource_type: str, num_patches: int) -> None:

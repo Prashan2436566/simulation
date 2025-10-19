@@ -1,6 +1,7 @@
 from mesa import Agent
 import math
 import random
+import pickle,os
 
 
 # =========================
@@ -171,7 +172,7 @@ class IdeologyAgent(Agent):
             self.rl_epsilon_decay = 0.995
 
             # tabular Q: dict[state] -> dict[action] -> value
-            self.q_table: dict[tuple, dict[str, float]] = {}
+            self.model.shared_q_table: dict[tuple, dict[str, float]] = {}
 
             # available discrete actions
             self.RL_ACTIONS = [
@@ -211,7 +212,7 @@ class IdeologyAgent(Agent):
             self.rl_epsilon_decay = 0.995
 
             # tabular Q + limited action set
-            self.q_table: dict[tuple, dict[str, float]] = {}
+            self.model.shared_q_table: dict[tuple, dict[str, float]] = {}
             self.RL_ACTIONS = [
                 "goto_nearest_non",
                 "goto_nearest_ren",
@@ -231,6 +232,11 @@ class IdeologyAgent(Agent):
 
             # no built-in renewable bias unless you set it in the model
             self.renewable_bias = getattr(self.model, "adaptive_renewable_bias", 0)
+        if ideology in ("adaptive", "adaptive_direct"):
+            path = f"qtable_{ideology}.pkl"
+            if os.path.exists(path):
+                self.model.shared_q_table = pickle.load(open(path, "rb"))
+
 
 
     # ---------- COMMON PER-TICK ----------
@@ -291,7 +297,7 @@ class IdeologyAgent(Agent):
         return (W // 2, H // 2)
 
     def _respawn_with_memory(self):
-        inherited_q   = self.q_table
+        inherited_q   = self.model.shared_q_table
         inherited_eps = self.rl_epsilon
         inherited_eps_count = self.episodes
         inherited_cap = self.max_adaptive_respawns
@@ -504,13 +510,13 @@ class IdeologyAgent(Agent):
         )
 
     def _qrow(self, state: tuple) -> dict:
-        if state not in self.q_table:
+        if state not in self.model.shared_q_table:
             q0 = getattr(self, "q_init", 15.0)
             row = {a: q0 for a in self.RL_ACTIONS}
             if "idle" in row:
                 row["idle"] = -1.0
-            self.q_table[state] = row
-        return self.q_table[state]
+            self.model.shared_q_table[state] = row
+        return self.model.shared_q_table[state]
 
     def _choose_action(self, state: tuple) -> str:
         # epsilon-greedy
@@ -530,34 +536,26 @@ class IdeologyAgent(Agent):
         row[a] += self.rl_alpha * (td_target - row[a])
 
     # --- Survival-first reward for the ADAPTIVE agent ---
-    def _calc_reward(
-        self,
-        action: str,
-        pre_e: float,
-        post_e: float,
-        patch=None,
-        event_bonus: float = 0.0,
-        renewable_bonus: float = 0.0,
-        nonrenewable_bonus: float = 0.0,
-        idle_penalty: float = 0.0,
-        bad_action_penalty: float = 0.0,
-        alive_bonus: float = 0.0,
-        max_abs_reward: float = 20.0,
-    ) -> float:
-        """
-        Survival-first reward:
-          +1 if, after this action, the agent would still be alive AFTER next upkeep,
-           0 otherwise (optionally add a small death penalty).
-        """
-        UPCOMING_UPKEEP = 0.3
-        USE_DEATH_PENALTY = True
-        DEATH_PENALTY = -3.0
+    def _calc_reward(self, action, pre_e, post_e, patch=None):
+        reward = 0.0
 
-        will_survive = (self.energy - UPCOMING_UPKEEP) > 0.0
-        if will_survive:
-            return 1.0
-        else:
-            return 0.0 + (DEATH_PENALTY if USE_DEATH_PENALTY else 0.0)
+        # Survival reward
+        reward += 1.0 if post_e > 0 else -3.0
+
+        # Positive feedback for energy gains
+        delta = post_e - pre_e
+        reward += 0.2 * delta
+
+        # Bonus for mining success
+        if action == "mine" and patch and getattr(patch, "amount", 0) > 0:
+            reward += 1.0
+
+        # Penalty for idle / wandering
+        if action == "idle":
+            reward -= 0.2
+
+        return reward
+
 
     # ---------- CAPITALIST ----------
     def capitalist_step(self) -> None:
@@ -1125,6 +1123,11 @@ class IdeologyAgent(Agent):
         # ε decay
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
+
+        if self.model.step_count % 500 == 0:  # every 500 steps
+            with open(f"qtable_{self.ideology}.pkl", "wb") as f:
+                pickle.dump(self.model.shared_q_table, f)
+
     def adaptive_direct_step(self) -> None:
         """
         Simpler RL: actions are high-level choices:
@@ -1284,6 +1287,10 @@ class IdeologyAgent(Agent):
         # ε decay
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
+
+        if self.model.step_count % 500 == 0:  # every 500 steps
+            with open(f"qtable_{self.ideology}.pkl", "wb") as f:
+                pickle.dump(self.model.shared_q_table, f)
 
 
     

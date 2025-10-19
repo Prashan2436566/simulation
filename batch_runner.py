@@ -1,3 +1,4 @@
+#python batch_runner.py --ideology adaptive_direct --steps 1000 --runs 10 --seed 42 --num_agents 15 --renewables_regenerate 1 --out_prefix results
 # batch_runner.py
 import argparse, random
 import numpy as np
