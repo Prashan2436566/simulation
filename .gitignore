@@ -1,0 +1,14 @@
+echo "__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.env
+venv/
+.venv/
+env/
+Lib/
+Include/
+Scripts/
+bin/
+torch/
+" > .gitignore
