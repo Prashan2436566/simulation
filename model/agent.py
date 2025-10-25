@@ -1054,9 +1054,19 @@ class IdeologyAgent(Agent):
         successful_repair = False
 
         # ---------- 2) Pick action ----------
+        # ε-greedy DQN action selection (with optional external override)
         eps = getattr(self.model, "dqn_eps", 0.10)
-        a_idx = self.model.dqn.act(s_vec, eps)
-        actions = self.model.dqn_actions
+
+        # Prefer external action if provided (e.g. from Stable-Baselines wrapper)
+        if hasattr(self.model, "external_action_idx") and self.model.external_action_idx is not None:
+            a_idx = int(self.model.external_action_idx)
+            self.model.external_action_idx = None  # consume it so other agents can't reuse
+        else:
+            eps = getattr(self.model, "dqn_eps", self.rl_epsilon)
+            a_idx = self.model.dqn.act(s_vec, eps)
+
+        # Map index → action name
+        actions = self.model.dqn_actions  # ["idle","move_N","move_S","move_E","move_W","mine","repair"]
         a = actions[a_idx]
 
         # basic safety: if very low energy, bias toward mining

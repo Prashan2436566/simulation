@@ -147,8 +147,8 @@ class IdeologyModel(Model):
         self._scatter_resources("nonrenewable", 100)
 
         #adaptive RL params
-        self.max_adaptive_respawns = float("inf")
-        #self.max_adaptive_respawns = 0
+        #self.max_adaptive_respawns = float("inf")
+        self.max_adaptive_respawns = 0
         self.q_init = 15.0  # optimistic initial Q for adaptive agents (≈ 1/(1-γ) with γ=0.95 → 20)
 
         # Totals that batch/visualization will read
