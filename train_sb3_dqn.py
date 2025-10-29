@@ -1,74 +1,217 @@
-# train_sb3_dqn.py
-from stable_baselines3 import DQN
-from stable_baselines3.common.callbacks import CheckpointCallback, EvalCallback
-from stable_baselines3.common.monitor import Monitor
-from mesa_sb3_env import MesaSB3Env
+#python train_sb3_dqn.py --device cuda --total_timesteps 500000
 import os
+import argparse
+from typing import Callable, List
 
-def make_env():
-    # Long-ish episodes so the agent can experience consequences
-    # You can pass knobs that match your IdeologyModel constructor
-    return MesaSB3Env(
-        width=30, height=30,
-        num_agents=15,
-        renewables_regenerate=True,
-        ideology="adaptive",   # control exactly one adaptive agent
-        max_steps=1500,        # per-episode horizon (increase if needed)
-        # Any additional model kwargs go here, e.g. pool_floor=10.0, degrade_chance=0.5, ...
+import numpy as np
+from stable_baselines3 import DQN
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.callbacks import (
+    CheckpointCallback,
+    EvalCallback,
+    StopTrainingOnNoModelImprovement,
+)
+from stable_baselines3.common.utils import set_random_seed
+
+from mesa_sb3_env import MesaSB3Env
+
+
+def make_env_fn(width: int, height: int, num_agents: int, max_steps: int, seed: int) -> Callable[[], MesaSB3Env]:
+    """Factory to create a MesaSB3Env with fixed params for DummyVecEnv."""
+    def _thunk():
+        env = MesaSB3Env(
+            width=width,
+            height=height,
+            num_agents=num_agents,
+            renewables_regenerate=True,
+            ideology="adaptive",
+            max_steps=max_steps,
+            seed=seed,
+        )
+        return env
+    return _thunk
+
+
+def build_vec_env(
+    n_envs: int,
+    width: int,
+    height: int,
+    num_agents: int,
+    max_steps: int,
+    seed: int,
+) -> DummyVecEnv:
+    set_random_seed(seed)
+    env_fns: List[Callable[[], MesaSB3Env]] = [
+        make_env_fn(width, height, num_agents, max_steps, seed + i) for i in range(n_envs)
+    ]
+    return DummyVecEnv(env_fns)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train SB3 DQN on Mesa adaptive environment with VecNormalize and CUDA support.")
+    # Env
+    parser.add_argument("--width", type=int, default=30)
+    parser.add_argument("--height", type=int, default=30)
+    parser.add_argument("--num_agents", type=int, default=15)
+    parser.add_argument("--max_steps", type=int, default=1500)
+    parser.add_argument("--n_envs", type=int, default=1, help="Parallel envs (DummyVecEnv). Start with 1, scale later.")
+    # Train
+    parser.add_argument("--total_timesteps", type=int, default=3_000_000)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--learning_rate", type=float, default=1e-3)
+    parser.add_argument("--buffer_size", type=int, default=300_000)
+    parser.add_argument("--learning_starts", type=int, default=20_000)
+    parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--train_freq", type=int, default=4)
+    parser.add_argument("--gradient_steps", type=int, default=4)
+    parser.add_argument("--target_update_interval", type=int, default=5_000)
+    parser.add_argument("--exploration_fraction", type=float, default=0.4)
+    parser.add_argument("--exploration_final_eps", type=float, default=0.01)
+    # Policy
+    parser.add_argument("--hidden", type=int, nargs=2, default=[256, 256], help="MLP sizes, e.g., --hidden 256 256")
+    # Device
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Computation device")
+    # Logging / Saving
+    parser.add_argument("--logdir", type=str, default="logs/tb")
+    parser.add_argument("--model_dir", type=str, default="models")
+    parser.add_argument("--ckpt_freq", type=int, default=100_000, help="Checkpoint save freq (steps). 0 to disable.")
+    parser.add_argument("--eval_freq", type=int, default=50_000, help="Evaluation frequency in steps.")
+    parser.add_argument("--n_eval_eps", type=int, default=5, help="Episodes per evaluation.")
+    # Resume
+    parser.add_argument("--resume", action="store_true", help="Resume from latest model and vecnorm stats if present.")
+
+    args = parser.parse_args()
+
+    os.makedirs(args.model_dir, exist_ok=True)
+    os.makedirs(args.logdir, exist_ok=True)
+    os.makedirs("logs/eval", exist_ok=True)
+
+    print(f"[INFO] Using device: {args.device}")
+
+    # ============ Build training VecEnv ============
+    train_env = build_vec_env(
+        n_envs=args.n_envs,
+        width=args.width,
+        height=args.height,
+        num_agents=args.num_agents,
+        max_steps=args.max_steps,
+        seed=args.seed,
     )
 
-if __name__ == "__main__":
-    os.makedirs("models", exist_ok=True)
-    os.makedirs("logs", exist_ok=True)
+    vecnorm_path = os.path.join(args.model_dir, "vecnorm.pkl")
+    if args.resume and os.path.exists(vecnorm_path):
+        train_env = VecNormalize.load(vecnorm_path, train_env)
+        train_env.training = True
+        train_env.norm_reward = True
+    else:
+        train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    env = make_env()
-    env = Monitor(env, filename="logs/monitor.csv")  # records episode rewards/lengths
-
-    # Checkpoints every N steps
-    checkpoint_cb = CheckpointCallback(
-        save_freq=50_000,           # save a snapshot every 50k steps
-        save_path="models",
-        name_prefix="dqn_sb3",
-        save_replay_buffer=True,
-        save_vecnormalize=True,
+    # ============ Build eval VecEnv ============
+    eval_env = build_vec_env(
+        n_envs=1,
+        width=args.width,
+        height=args.height,
+        num_agents=args.num_agents,
+        max_steps=args.max_steps,
+        seed=args.seed + 10_000,
     )
 
-    # Optional: periodic evaluation on a fresh copy of the env
-    eval_env = make_env()
+    eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    if args.resume and os.path.exists(vecnorm_path):
+        eval_env = VecNormalize.load(vecnorm_path, eval_env)
+    eval_env.training = False
+    eval_env.norm_reward = False
+
+    # ============ Callbacks ============
+    callbacks = []
+    stop_cb = StopTrainingOnNoModelImprovement(
+        max_no_improvement_evals=10,
+        min_evals=5,
+        verbose=1,
+    )
+
     eval_cb = EvalCallback(
         eval_env,
-        best_model_save_path="models/best",
+        best_model_save_path=os.path.join(args.model_dir, "best"),
         log_path="logs/eval",
-        eval_freq=50_000,
-        n_eval_episodes=5,
+        eval_freq=max(args.eval_freq // max(args.n_envs, 1), 1),
+        n_eval_episodes=args.n_eval_eps,
         deterministic=False,
+        callback_after_eval=stop_cb,
+        warn=True,
     )
+    callbacks.append(eval_cb)
 
-    model = DQN(
-        "MlpPolicy",
-        env,
-        learning_rate=1e-3,
-        buffer_size=200_000,
-        learning_starts=10_000,      # warmup before learning
-        batch_size=256,
-        gamma=0.95,
-        target_update_interval=10_000,
-        train_freq=4,                # env steps per gradient step trigger
-        gradient_steps=1,            # gradient steps per trigger (increase if you want more updates)
-        exploration_fraction=0.2,    # linearly anneal epsilon over first 20% of steps
-        exploration_initial_eps=0.9,
-        exploration_final_eps=0.05,
-        verbose=1,
-        tensorboard_log="logs/tb",
-    )
+    if args.ckpt_freq and args.ckpt_freq > 0:
+        ckpt_cb = CheckpointCallback(
+            save_freq=max(args.ckpt_freq // max(args.n_envs, 1), 1),
+            save_path=args.model_dir,
+            name_prefix="dqn_ckpt",
+            save_replay_buffer=True,
+            save_vecnormalize=True,
+        )
+        callbacks.append(ckpt_cb)
 
-    # Give it real time to learn; start with 2–5 million and scale based on speed
+    # ============ Model ============
+    policy_kwargs = dict(net_arch=list(args.hidden))
+    model_path = os.path.join(args.model_dir, "dqn_sb3_final.zip")
+
+    import torch
+    print("[INFO] torch.cuda.is_available() =", torch.cuda.is_available())
+    if torch.cuda.is_available():
+        print("[INFO] Current GPU:", torch.cuda.get_device_name(0))
+
+    if args.resume and os.path.exists(model_path):
+        print(f"[INFO] Resuming model from {model_path}")
+        model = DQN.load(model_path, env=train_env, device=args.device)
+        model.gamma = args.gamma
+        model.learning_rate = args.learning_rate
+        model.batch_size = args.batch_size
+        model.train_freq = args.train_freq
+        model.gradient_steps = args.gradient_steps
+        model.target_update_interval = args.target_update_interval
+        model.exploration_initial_eps = 1.0
+        model.exploration_final_eps = args.exploration_final_eps
+        model.exploration_fraction = args.exploration_fraction
+    else:
+        model = DQN(
+            policy="MlpPolicy",
+            env=train_env,
+            learning_rate=args.learning_rate,
+            buffer_size=args.buffer_size,
+            learning_starts=args.learning_starts,
+            batch_size=args.batch_size,
+            gamma=args.gamma,
+            target_update_interval=args.target_update_interval,
+            train_freq=args.train_freq,
+            gradient_steps=args.gradient_steps,
+            exploration_fraction=args.exploration_fraction,
+            exploration_initial_eps=1.0,
+            exploration_final_eps=args.exploration_final_eps,
+            verbose=1,
+            tensorboard_log=args.logdir,
+            policy_kwargs=policy_kwargs,
+            device=args.device,
+        )
+
+    # ============ Train ============
+    print("[INFO] Starting training...")
     model.learn(
-        total_timesteps=200000,
-        callback=[checkpoint_cb, eval_cb],
-        progress_bar=True
+        total_timesteps=args.total_timesteps,
+        callback=callbacks,
+        progress_bar=True,
+        log_interval=10,
+        tb_log_name="DQN_adaptive",
     )
 
-    model.save("models/dqn_sb3_final")
-    env.close()
-    eval_env.close()
+    # ============ Save ============
+    print("[INFO] Saving model and VecNormalize stats...")
+    model.save(model_path)
+    train_env.save(vecnorm_path)
+    print(f"[OK] Saved model to {model_path}")
+    print(f"[OK] Saved VecNormalize to {vecnorm_path}")
+
+
+if __name__ == "__main__":
+    main()
