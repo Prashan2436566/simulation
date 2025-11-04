@@ -286,6 +286,10 @@ class IdeologyAgent(Agent):
             self.adaptive_dqn_step()
         elif self.ideology == "adaptive_direct":
             self.adaptive_direct_step()
+        elif self.ideology == "communist":
+            self.communist_step()
+        elif self.ideology == "green_communist":
+            self.communist_green_step()
         else:
             self.capitalist_step()
 
@@ -1016,7 +1020,192 @@ class IdeologyAgent(Agent):
         if self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
 
+    def _pool_first_contribute(self, net_gain: float):
+        """
+        Push almost everything above a small keep floor into the community pool first,
+        then (optionally) top up nearby needy agents.
+        """
+        floor = getattr(self.model, "pool_floor", 10.0)
+        if net_gain > 0 and self.energy > floor:
+            # tithe on net gain (pool-first)
+            tithe = self.model.tithe_rate * net_gain
+            tithe = min(tithe, max(0.0, self.energy - floor))
+            if tithe > 0:
+                self.energy -= tithe
+                self.model.community_pool += tithe
 
+        # hard personal cap -> skim to pool
+        safe_cap = max(self.energy_cap, floor)
+        if self.energy > safe_cap:
+            skim = max(0.0, self.energy - safe_cap)
+            if skim > 0:
+                self.energy -= skim
+                self.model.community_pool += skim
+
+        # (Optional) after securing pool, do small neighbour top-ups
+        # if the pool is already healthy.
+        if self.model.community_pool > floor and self.energy > (self.min_keep + 6):
+            self.redistribute_to_neighbors()
+
+    def communist_step(self) -> None:
+        # 1) Repair first (aggressive: if we can afford it, do it)
+        if self._maybe_repair_instant():
+            return
+
+        # 2) Resolve ongoing mining bursts (reuse socialist cadence)
+        if self.mining:
+            self.mining_counter -= 1
+            if self.mining_counter <= 0:
+                cell = self.model.grid.get_cell_list_contents([self.pos])
+                patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+                hub_here = any(isinstance(o, EnergyHub) and o.built for o in cell)
+
+                if patch:
+                    # pay renewable setup once
+                    if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                        setup = self.model.cost_renewable_setup
+                        if self.energy >= setup:
+                            self.energy -= setup
+                            self.renewable_setup_paid.add(patch.unique_id)
+                        else:
+                            self.mining = False
+                            self.mining_target = None
+                            return
+
+                    if patch.resource_type == "renewable":
+                        desired = self.model.yield_per_mine_renewable + (1 if hub_here else 0)
+                        op_cost = max(0, self.model.cost_extract_renewable - (1 if hub_here else 0))
+                    else:
+                        desired = self.model.yield_per_mine_nonrenewable
+                        op_cost = self.model.cost_extract_nonrenewable
+
+                    gained = patch.harvest(desired)
+                    net_gain = gained - op_cost
+                    self.energy += net_gain
+                    if net_gain > 0:
+                        self.total_collected_energy += net_gain
+
+                    if patch.amount <= 0 and patch.resource_type == "nonrenewable":
+                        try:
+                            self.model.grid.remove_agent(patch)
+                            self.model.schedule.remove(patch)
+                        except Exception:
+                            pass
+                        try:
+                            if patch.pos in self.model.nonrenewable_locations:
+                                self.model.nonrenewable_locations.remove(patch.pos)
+                        except ValueError:
+                            pass
+
+                    # POOL-FIRST contribution + strict personal cap
+                    self._pool_first_contribute(net_gain)
+
+                self.mining = False
+                self.mining_target = None
+            return
+
+        # 3) Choose target with collective criteria
+        avg_e = self.model.average_energy()
+        pool_low = (self.model.community_pool < self.model.pool_floor)
+
+        # Very strong renewable preference; only go to nonrenewables if collective is struggling
+        target_type = "renewable"
+        if pool_low or avg_e <= 5.0:
+            # allow nonrenewables if collective is under stress
+            target_type = "nonrenewable" if random.random() < 0.5 else "renewable"
+
+        # If personally in emergency, head to nearest usable patch (any type)
+        if self.energy < self.emergency_floor:
+            pos_r, dr, pr = self._nearest_patch("renewable")
+            pos_n, dn, pn = self._nearest_patch("nonrenewable")
+            if pr is None and pn is None:
+                self.idle_wander(); return
+            target = pos_r if (pn is None or (pr is not None and dr <= dn)) else pos_n
+        else:
+            pos_p, dp, pp = self._nearest_patch(target_type)
+            if pp is None:
+                other = "nonrenewable" if target_type == "renewable" else "renewable"
+                pos_p, dp, pp = self._nearest_patch(other)
+                if pp is None:
+                    self.idle_wander(); return
+            target = pos_p
+
+        # 4) Move and act (build hub on renewables, otherwise mine)
+        if target:
+            self.move_towards(target, speed=1)
+            if self.pos == target:
+                if self._maybe_repair_instant():
+                    return
+                self._maybe_build_hub_or_mine()
+                # pool-first after we eventually finish the mine burst (handled above)
+
+    def communist_green_step(self) -> None:
+        """
+        Eco-strict variant:
+        - Never mine nonrenewables
+        - Same pool-first, strict cap
+        - Avoid high-scar renewables (let them heal; repair when possible)
+        """
+        # Repair first
+        if self._maybe_repair_instant():
+            return
+
+        # Finish ongoing burst
+        if self.mining:
+            # identical to communist_step end-of-burst, then pool-first:
+            self.mining_counter -= 1
+            if self.mining_counter <= 0:
+                cell = self.model.grid.get_cell_list_contents([self.pos])
+                patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
+                hub_here = any(isinstance(o, EnergyHub) and o.built for o in cell)
+                if patch:
+                    if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
+                        setup = self.model.cost_renewable_setup
+                        if self.energy >= setup:
+                            self.energy -= setup
+                            self.renewable_setup_paid.add(patch.unique_id)
+                        else:
+                            self.mining = False
+                            self.mining_target = None
+                            return
+                    desired = self.model.yield_per_mine_renewable + (1 if hub_here else 0)
+                    op_cost = max(0, self.model.cost_extract_renewable - (1 if hub_here else 0))
+                    gained = patch.harvest(desired)
+                    net_gain = gained - op_cost
+                    self.energy += net_gain
+                    if net_gain > 0:
+                        self.total_collected_energy += net_gain
+                    self._pool_first_contribute(net_gain)
+                self.mining = False
+                self.mining_target = None
+            return
+
+        # Target ONLY renewables, avoiding high-scar if possible
+        best_pos, best_score = None, -1e18
+        for pos in list(self.model.renewable_locations):
+            cell = self.model.grid.get_cell_list_contents([pos])
+            patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable" and o.amount > 0), None)
+            if not patch:
+                continue
+            # avoid crowded tile
+            if any(isinstance(a, IdeologyAgent) for a in cell):
+                continue
+            scar = getattr(patch, "scar_level", 0.0)
+            # prefer lower scar
+            score = (self.model.yield_per_mine_renewable - self.model.cost_extract_renewable) - 0.5 * scar
+            d = self.manhattan_distance(self.pos, pos)
+            score /= (d + 1)
+            if score > best_score:
+                best_pos, best_score = pos, score
+
+        if best_pos:
+            self.move_towards(best_pos, speed=1)
+            if self.pos == best_pos:
+                if self._maybe_repair_instant():
+                    return
+                self._maybe_build_hub_or_mine()
+        else:
+            self.idle_wander()
 
     def adaptive_dqn_step(self) -> None:
         """

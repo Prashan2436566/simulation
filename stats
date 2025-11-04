@@ -1,2 +1,6 @@
-Mean reward over 20 episodes: 53.550 ± 12.722
-Mean survival time (steps): 49.00 ± 6.65
+Mean reward over 20 episodes: 41.865 ± 6.584
+Mean survival time (steps): 47.20 ± 6.58
+Energy mined (renewable):   26.74 ± 12.56
+Energy mined (nonrenewable):102.25 ± 21.65
+Energy mined (total):       128.99 ± 24.46
+Renewable share: 20.7%
