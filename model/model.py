@@ -20,7 +20,6 @@ class LegendElement(TextElement):
             <span style='color:teal;'>🟢 Green Capitalist</span><br>
             <span style='color:orange;'>🟠 Socialist</span>
             <span style='color:brown;'>🟤 Green Socialist</span><br>
-            <span style='color:orange;'>🟧 S</span> = Energy Hub (renewable)<br>
             <span style='color:red;'>🔴 Numbers</span> on green tiles = local scar (pollution)
         </div>
         """
