@@ -10,6 +10,9 @@ and export averaged data and figures for:
   - AvgEnergy
   - CommunityPool (excluded for capitalist & green_capitalist)
   - GiniEnergy
+  - TotalScar
+  - MinedRenewable
+  - MinedNonrenewable
 
 It runs each ideology multiple times (using --seeds) and averages results.
 Outputs per-ideology CSVs (with conditional columns), plots, and a cross-ideology summary.
@@ -43,7 +46,17 @@ IDEOLOGIES = [
     "green_communist",
 ]
 
-TS_METRICS = ["AgentsAlive", "AvgEnergy", "CommunityPool", "GiniEnergy"]
+# Time-series metrics expected in the model DataCollector
+TS_METRICS = [
+    "AgentsAlive",
+    "AvgEnergy",
+    "CommunityPool",         # may not exist/used for capitalist variants
+    "GiniEnergy",
+    "TotalScar",
+    "MinedRenewable",
+    "MinedNonrenewable",
+]
+
 POOLLESS = {"capitalist", "green_capitalist"}  # ideologies without a community pool
 
 
@@ -191,6 +204,7 @@ def main():
                 height=args.height,
                 ideologies=IDEOLOGIES,
                 poolless=list(POOLLESS),
+                metrics=TS_METRICS,
             ),
             f,
             indent=2,
@@ -199,6 +213,7 @@ def main():
     # Aggregates for cross-ideology comparisons
     lifespan_means, lifespan_stds = {}, {}
     final_avg_energy, final_gini, final_pool = {}, {}, {}
+    final_total_scar, final_mined_ren, final_mined_nonren = {}, {}, {}
 
     # Per-ideology runs
     for ideol in IDEOLOGIES:
@@ -222,13 +237,20 @@ def main():
         # Collect final-step headline values
         lifespan_means[ideol] = ls_mean
         lifespan_stds[ideol] = ls_std
+
         final_avg_energy[ideol] = float(df_mean["AvgEnergy"].iloc[-1])
         final_gini[ideol] = float(df_mean["GiniEnergy"].iloc[-1])
 
+        # Community pool: not applicable to capitalist variants
         if ideol in POOLLESS:
-            final_pool[ideol] = np.nan  # not applicable
+            final_pool[ideol] = np.nan
         else:
             final_pool[ideol] = float(df_mean["CommunityPool"].iloc[-1])
+
+        # Newly added sustainability and extraction metrics
+        final_total_scar[ideol] = float(df_mean["TotalScar"].iloc[-1])
+        final_mined_ren[ideol] = float(df_mean["MinedRenewable"].iloc[-1])
+        final_mined_nonren[ideol] = float(df_mean["MinedNonrenewable"].iloc[-1])
 
     # Cross-ideology plots
     plot_cross_ideology_bar(
@@ -250,7 +272,7 @@ def main():
         os.path.join(outdir, "gini_final_comparison.png"),
     )
 
-    # For CommunityPool, drop capitalist & green_capitalist from the comparison plot
+    # Community pool comparison (remove capitalist entries)
     filtered_pool = {k: v for k, v in final_pool.items() if k not in POOLLESS}
     plot_cross_ideology_bar(
         filtered_pool,
@@ -259,7 +281,27 @@ def main():
         os.path.join(outdir, "pool_final_comparison.png"),
     )
 
-    # Summary table
+    # New cross-ideology comparisons
+    plot_cross_ideology_bar(
+        final_total_scar,
+        "Final TotalScar",
+        "TotalScar (final timestep)",
+        os.path.join(outdir, "scar_final_comparison.png"),
+    )
+    plot_cross_ideology_bar(
+        final_mined_ren,
+        "Final MinedRenewable",
+        "MinedRenewable (final timestep)",
+        os.path.join(outdir, "mined_renewable_final_comparison.png"),
+    )
+    plot_cross_ideology_bar(
+        final_mined_nonren,
+        "Final MinedNonrenewable",
+        "MinedNonrenewable (final timestep)",
+        os.path.join(outdir, "mined_nonrenewable_final_comparison.png"),
+    )
+
+    # Summary table (now includes scar & mined metrics)
     summary_rows = []
     for ideol in IDEOLOGIES:
         summary_rows.append(
@@ -269,7 +311,10 @@ def main():
                 "avg_lifespan_std": lifespan_stds[ideol],
                 "final_AvgEnergy": final_avg_energy[ideol],
                 "final_GiniEnergy": final_gini[ideol],
-                "final_CommunityPool": final_pool[ideol],  # NaN for POOLLESS ideologies
+                "final_CommunityPool": final_pool[ideol],             # NaN for POOLLESS ideologies
+                "final_TotalScar": final_total_scar[ideol],
+                "final_MinedRenewable": final_mined_ren[ideol],
+                "final_MinedNonrenewable": final_mined_nonren[ideol],
             }
         )
     summary_df = pd.DataFrame(summary_rows).sort_values("ideology")
