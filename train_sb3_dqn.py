@@ -1,17 +1,21 @@
-#python train_sb3_dqn.py --device cuda --total_timesteps 500000
+# train_sb3_dqn.py
+# Example:
+#   python train_sb3_dqn.py --device cuda --total_timesteps 500000
+
 import os
 import argparse
 from typing import Callable, List
 
 import numpy as np
 from stable_baselines3 import DQN
-from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
+from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize, VecMonitor
 from stable_baselines3.common.callbacks import (
     CheckpointCallback,
     EvalCallback,
     StopTrainingOnNoModelImprovement,
 )
 from stable_baselines3.common.utils import set_random_seed
+from stable_baselines3.common.logger import configure
 
 from mesa_sb3_env import MesaSB3Env
 
@@ -39,16 +43,22 @@ def build_vec_env(
     num_agents: int,
     max_steps: int,
     seed: int,
+    monitor_path: str | None = None,
 ) -> DummyVecEnv:
     set_random_seed(seed)
     env_fns: List[Callable[[], MesaSB3Env]] = [
         make_env_fn(width, height, num_agents, max_steps, seed + i) for i in range(n_envs)
     ]
-    return DummyVecEnv(env_fns)
+    venv = DummyVecEnv(env_fns)
+    # Per-episode logging (CSV): logs/monitor/monitor.csv
+    venv = VecMonitor(venv, filename=monitor_path) if monitor_path else VecMonitor(venv)
+    return venv
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Train SB3 DQN on Mesa adaptive environment with VecNormalize and CUDA support.")
+    parser = argparse.ArgumentParser(
+        description="Train SB3 DQN on Mesa adaptive environment with VecNormalize, CSV & TensorBoard logging."
+    )
     # Env
     parser.add_argument("--width", type=int, default=30)
     parser.add_argument("--height", type=int, default=30)
@@ -73,7 +83,9 @@ def main():
     # Device
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"], help="Computation device")
     # Logging / Saving
-    parser.add_argument("--logdir", type=str, default="logs/tb")
+    parser.add_argument("--tb_logdir", type=str, default="logs/tb", help="TensorBoard log root")
+    parser.add_argument("--csv_logdir", type=str, default="logs/dqn_csv", help="CSV progress log dir")
+    parser.add_argument("--monitor_logdir", type=str, default="logs/monitor", help="Per-episode monitor CSV dir")
     parser.add_argument("--model_dir", type=str, default="models")
     parser.add_argument("--ckpt_freq", type=int, default=100_000, help="Checkpoint save freq (steps). 0 to disable.")
     parser.add_argument("--eval_freq", type=int, default=50_000, help="Evaluation frequency in steps.")
@@ -83,13 +95,16 @@ def main():
 
     args = parser.parse_args()
 
+    # Make dirs
     os.makedirs(args.model_dir, exist_ok=True)
-    os.makedirs(args.logdir, exist_ok=True)
+    os.makedirs(args.tb_logdir, exist_ok=True)
+    os.makedirs(args.csv_logdir, exist_ok=True)
+    os.makedirs(args.monitor_logdir, exist_ok=True)
     os.makedirs("logs/eval", exist_ok=True)
 
     print(f"[INFO] Using device: {args.device}")
 
-    # ============ Build training VecEnv ============
+    # ===== Build training VecEnv =====
     train_env = build_vec_env(
         n_envs=args.n_envs,
         width=args.width,
@@ -97,6 +112,7 @@ def main():
         num_agents=args.num_agents,
         max_steps=args.max_steps,
         seed=args.seed,
+        monitor_path=os.path.join(args.monitor_logdir, "monitor"),
     )
 
     vecnorm_path = os.path.join(args.model_dir, "vecnorm.pkl")
@@ -107,7 +123,7 @@ def main():
     else:
         train_env = VecNormalize(train_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
 
-    # ============ Build eval VecEnv ============
+    # ===== Build eval VecEnv (separate RNG, no reward norm during eval) =====
     eval_env = build_vec_env(
         n_envs=1,
         width=args.width,
@@ -115,15 +131,16 @@ def main():
         num_agents=args.num_agents,
         max_steps=args.max_steps,
         seed=args.seed + 10_000,
+        monitor_path=None,  # eval callback has its own logging
     )
-
+    # Load same normalization stats for eval obs; keep reward unnormalized
     eval_env = VecNormalize(eval_env, norm_obs=True, norm_reward=False, clip_obs=10.0)
     if args.resume and os.path.exists(vecnorm_path):
         eval_env = VecNormalize.load(vecnorm_path, eval_env)
     eval_env.training = False
     eval_env.norm_reward = False
 
-    # ============ Callbacks ============
+    # ===== Callbacks =====
     callbacks = []
     stop_cb = StopTrainingOnNoModelImprovement(
         max_no_improvement_evals=10,
@@ -137,7 +154,7 @@ def main():
         log_path="logs/eval",
         eval_freq=max(args.eval_freq // max(args.n_envs, 1), 1),
         n_eval_episodes=args.n_eval_eps,
-        deterministic=False,
+        deterministic=False,                   # keep some exploration during eval
         callback_after_eval=stop_cb,
         warn=True,
     )
@@ -153,18 +170,23 @@ def main():
         )
         callbacks.append(ckpt_cb)
 
-    # ============ Model ============
+    # ===== Model =====
     policy_kwargs = dict(net_arch=list(args.hidden))
     model_path = os.path.join(args.model_dir, "dqn_sb3_final.zip")
 
-    import torch
-    print("[INFO] torch.cuda.is_available() =", torch.cuda.is_available())
-    if torch.cuda.is_available():
-        print("[INFO] Current GPU:", torch.cuda.get_device_name(0))
+    # Device info
+    try:
+        import torch
+        print("[INFO] torch.cuda.is_available() =", torch.cuda.is_available())
+        if torch.cuda.is_available():
+            print("[INFO] Current GPU:", torch.cuda.get_device_name(0))
+    except Exception:
+        pass
 
     if args.resume and os.path.exists(model_path):
         print(f"[INFO] Resuming model from {model_path}")
         model = DQN.load(model_path, env=train_env, device=args.device)
+        # Optionally refresh hyperparams on resume
         model.gamma = args.gamma
         model.learning_rate = args.learning_rate
         model.batch_size = args.batch_size
@@ -190,27 +212,41 @@ def main():
             exploration_initial_eps=1.0,
             exploration_final_eps=args.exploration_final_eps,
             verbose=1,
-            tensorboard_log=args.logdir,
+            tensorboard_log=args.tb_logdir,
             policy_kwargs=policy_kwargs,
             device=args.device,
         )
 
-    # ============ Train ============
+    # ====== Configure logger: CSV + TensorBoard ======
+    # This writes: logs/dqn_csv/progress.csv and also keeps TB logs under logs/tb
+    new_logger = configure(args.csv_logdir, ["csv", "tensorboard"])
+    model.set_logger(new_logger)
+
+    # ===== Train =====
     print("[INFO] Starting training...")
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=callbacks,
-        progress_bar=True,
+        progress_bar=True,      # requires SB3 >= 1.8.0
         log_interval=10,
         tb_log_name="DQN_adaptive",
     )
 
-    # ============ Save ============
+    # ===== Save =====
     print("[INFO] Saving model and VecNormalize stats...")
     model.save(model_path)
     train_env.save(vecnorm_path)
     print(f"[OK] Saved model to {model_path}")
     print(f"[OK] Saved VecNormalize to {vecnorm_path}")
+
+    print("\nWhere to look:")
+    print(f"  • TensorBoard: {args.tb_logdir}/DQN_adaptive_* (run `tensorboard --logdir {args.tb_logdir}`)")
+    print(f"  • CSV progress: {args.csv_logdir}/progress.csv")
+    print(f"  • Monitor (per-episode): {args.monitor_logdir}/monitor.csv")
+    print("  • Best model (by eval reward): models/best/best_model.zip")
+    print("  • Eval curves (timesteps, rewards, lengths): logs/eval/evaluations.npz")
+    if args.ckpt_freq and args.ckpt_freq > 0:
+        print("  • Checkpoints: models/dqn_ckpt_*")
 
 
 if __name__ == "__main__":
