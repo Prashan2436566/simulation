@@ -11,5 +11,9 @@
     "green_socialist",
     "communist",
     "green_communist"
+  ],
+  "poolless": [
+    "green_capitalist",
+    "capitalist"
   ]
 }

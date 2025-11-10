@@ -8,18 +8,17 @@ Run ideological simulations (capitalist, green_capitalist, socialist, green_soci
 and export averaged data and figures for:
   - AgentsAlive (proxy for lifespan)
   - AvgEnergy
-  - CommunityPool
+  - CommunityPool (excluded for capitalist & green_capitalist)
   - GiniEnergy
 
 It runs each ideology multiple times (using --seeds) and averages results.
-Outputs CSVs, plots, and summary statistics.
+Outputs per-ideology CSVs (with conditional columns), plots, and a cross-ideology summary.
 
 Usage:
     python run_ideology_results.py --steps 1500 --seeds 10 --agents 15 --width 30 --height 30 --out results_ideologies
 """
 
 import os
-import sys
 import argparse
 import numpy as np
 import pandas as pd
@@ -30,9 +29,9 @@ from datetime import datetime
 # --- Project imports ---
 try:
     from model.model import IdeologyModel
-except Exception as e:
-    print("[ERROR] Could not import from 'model'. Make sure you run this from your project root.")
-    print("        Tried: from model.model import IdeologyModel")
+except Exception:
+    print("[ERROR] Could not import from 'model'. Run this from your project root.")
+    print("        Expected: from model.model import IdeologyModel")
     raise
 
 IDEOLOGIES = [
@@ -45,10 +44,15 @@ IDEOLOGIES = [
 ]
 
 TS_METRICS = ["AgentsAlive", "AvgEnergy", "CommunityPool", "GiniEnergy"]
+POOLLESS = {"capitalist", "green_capitalist"}  # ideologies without a community pool
 
 
-def run_one(ideology, steps, width, height, num_agents, seed):
-    """Run a single simulation and return (df_ts, avg_lifespan)."""
+def run_one(ideology: str, steps: int, width: int, height: int, num_agents: int, seed: int):
+    """
+    Run a single simulation and return:
+      - df_ts: time-series DataFrame of model reporters
+      - avg_lifespan: mean lifespan (steps alive) of agents present at start
+    """
     np.random.seed(seed)
     model = IdeologyModel(
         width=width,
@@ -58,19 +62,22 @@ def run_one(ideology, steps, width, height, num_agents, seed):
         ideology=ideology,
     )
 
+    # Track how long each starting agent stays alive (age in steps)
     ages = {}
     for a in list(model.schedule.agents):
         if hasattr(a, "energy"):
             ages[a.unique_id] = 0
 
-    for t in range(steps):
+    for _ in range(steps):
         model.step()
         for a in list(model.schedule.agents):
             if hasattr(a, "energy"):
                 ages[a.unique_id] = ages.get(a.unique_id, 0) + 1
 
+    # Collect reporters
     df_ts = model.datacollector.get_model_vars_dataframe()
 
+    # Ensure all expected columns exist for alignment
     for col in TS_METRICS:
         if col not in df_ts.columns:
             df_ts[col] = np.nan
@@ -79,17 +86,26 @@ def run_one(ideology, steps, width, height, num_agents, seed):
     return df_ts, avg_lifespan
 
 
-def aggregate_over_seeds(ideology, steps, width, height, num_agents, seeds):
-    """Run multiple seeds and average results."""
-    runs, lifespans = [], []
+def aggregate_over_seeds(ideology: str, steps: int, width: int, height: int, num_agents: int, seeds: int):
+    """
+    Run multiple seeds and average the time-series per timestep.
+    Returns:
+        df_mean_std: DataFrame with columns [metrics..., metrics_std...]
+        avg_lifespan_mean: float
+        avg_lifespan_std: float
+    """
+    runs = []
+    lifespans = []
     for s in range(seeds):
         df_ts, avg_ls = run_one(ideology, steps, width, height, num_agents, seed=1000 + s)
         runs.append(df_ts[TS_METRICS].reset_index(drop=True))
         lifespans.append(avg_ls)
 
+    # Align by min length (should be uniform anyway)
     L = min(len(df) for df in runs)
     runs = [df.iloc[:L].copy() for df in runs]
-    arr = np.stack([df.values for df in runs], axis=0)
+
+    arr = np.stack([df.values for df in runs], axis=0)  # (seeds, T, metrics)
     mean_arr = arr.mean(axis=0)
     std_arr = arr.std(axis=0)
 
@@ -101,13 +117,19 @@ def aggregate_over_seeds(ideology, steps, width, height, num_agents, seeds):
     return out, float(np.mean(lifespans)), float(np.std(lifespans))
 
 
-def plot_one_timeseries(df_mean, ideology, outdir):
-    """Plot one figure per metric."""
+def plot_one_timeseries(df_mean: pd.DataFrame, ideology: str, outdir: str):
+    """
+    Save one figure per metric for the ideology.
+    Skips CommunityPool for capitalist and green_capitalist.
+    """
+    skip_pool = ideology in POOLLESS
     for metric in TS_METRICS:
+        if skip_pool and metric == "CommunityPool":
+            continue
         plt.figure(figsize=(8, 4.5))
         y = df_mean[metric].to_numpy()
         x = np.arange(len(y))
-        plt.plot(x, y, label=metric)
+        plt.plot(x, y)
         plt.xlabel("Timestep")
         plt.ylabel(metric)
         plt.title(f"{ideology}: {metric} over time")
@@ -116,7 +138,8 @@ def plot_one_timeseries(df_mean, ideology, outdir):
         plt.close()
 
 
-def plot_cross_ideology_bar(values_dict, title, ylabel, outpath):
+def plot_cross_ideology_bar(values_dict: dict, title: str, ylabel: str, outpath: str):
+    """Simple bar chart from a dict of {name: value}."""
     names = list(values_dict.keys())
     vals = [values_dict[k] for k in names]
     plt.figure(figsize=(9, 5))
@@ -130,21 +153,34 @@ def plot_cross_ideology_bar(values_dict, title, ylabel, outpath):
     plt.close()
 
 
+def save_csv_conditionally(df_mean: pd.DataFrame, ideology: str, out_csv_path: str):
+    """
+    Save the per-ideology timeseries CSV.
+    Drops CommunityPool columns entirely for capitalist & green_capitalist.
+    Keeps std columns aligned with dropped metrics as well.
+    """
+    if ideology in POOLLESS:
+        cols = [c for c in df_mean.columns if not (c == "CommunityPool" or c == "CommunityPool_std")]
+        df_mean.loc[:, cols].to_csv(out_csv_path)
+    else:
+        df_mean.to_csv(out_csv_path)
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--steps", type=int, default=1500)
-    ap.add_argument("--seeds", type=int, default=3)
-    ap.add_argument("--agents", type=int, default=15)
+    ap.add_argument("--steps", type=int, default=1500, help="Timesteps per run")
+    ap.add_argument("--seeds", type=int, default=3, help="Independent runs to average")
+    ap.add_argument("--agents", type=int, default=15, help="Agents per run")
     ap.add_argument("--width", type=int, default=30)
     ap.add_argument("--height", type=int, default=30)
-    ap.add_argument("--out", type=str, default=None)
+    ap.add_argument("--out", type=str, default=None, help="Output directory")
     args = ap.parse_args()
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = args.out or f"results_ideologies_{timestamp}"
     os.makedirs(outdir, exist_ok=True)
 
-    # Save config
+    # Save run config
     with open(os.path.join(outdir, "config.json"), "w") as f:
         json.dump(
             dict(
@@ -154,50 +190,88 @@ def main():
                 width=args.width,
                 height=args.height,
                 ideologies=IDEOLOGIES,
+                poolless=list(POOLLESS),
             ),
             f,
             indent=2,
         )
 
+    # Aggregates for cross-ideology comparisons
     lifespan_means, lifespan_stds = {}, {}
     final_avg_energy, final_gini, final_pool = {}, {}, {}
 
+    # Per-ideology runs
     for ideol in IDEOLOGIES:
         print(f"[RUN] {ideol}")
         df_mean, ls_mean, ls_std = aggregate_over_seeds(
-            ideol, args.steps, args.width, args.height, args.agents, args.seeds
+            ideology=ideol,
+            steps=args.steps,
+            width=args.width,
+            height=args.height,
+            num_agents=args.agents,
+            seeds=args.seeds,
         )
 
+        # Save per-ideology CSV (conditionally drop pool columns)
         csv_path = os.path.join(outdir, f"{ideol}_timeseries.csv")
-        df_mean.to_csv(csv_path)
+        save_csv_conditionally(df_mean, ideol, csv_path)
+
+        # Per-ideology plots (skip pool where applicable)
         plot_one_timeseries(df_mean, ideol, outdir)
 
+        # Collect final-step headline values
         lifespan_means[ideol] = ls_mean
         lifespan_stds[ideol] = ls_std
         final_avg_energy[ideol] = float(df_mean["AvgEnergy"].iloc[-1])
         final_gini[ideol] = float(df_mean["GiniEnergy"].iloc[-1])
-        final_pool[ideol] = float(df_mean["CommunityPool"].iloc[-1])
+
+        if ideol in POOLLESS:
+            final_pool[ideol] = np.nan  # not applicable
+        else:
+            final_pool[ideol] = float(df_mean["CommunityPool"].iloc[-1])
 
     # Cross-ideology plots
-    plot_cross_ideology_bar(lifespan_means, "Average Agent Lifespan", "Avg Lifespan (steps)",
-                            os.path.join(outdir, "lifespan_comparison.png"))
-    plot_cross_ideology_bar(final_avg_energy, "Final AvgEnergy", "AvgEnergy (final timestep)",
-                            os.path.join(outdir, "avg_energy_final_comparison.png"))
-    plot_cross_ideology_bar(final_gini, "Final GiniEnergy", "GiniEnergy (final timestep)",
-                            os.path.join(outdir, "gini_final_comparison.png"))
-    plot_cross_ideology_bar(final_pool, "Final CommunityPool", "CommunityPool (final timestep)",
-                            os.path.join(outdir, "pool_final_comparison.png"))
+    plot_cross_ideology_bar(
+        lifespan_means,
+        "Average Agent Lifespan",
+        "Avg Lifespan (steps)",
+        os.path.join(outdir, "lifespan_comparison.png"),
+    )
+    plot_cross_ideology_bar(
+        final_avg_energy,
+        "Final AvgEnergy",
+        "AvgEnergy (final timestep)",
+        os.path.join(outdir, "avg_energy_final_comparison.png"),
+    )
+    plot_cross_ideology_bar(
+        final_gini,
+        "Final GiniEnergy",
+        "GiniEnergy (final timestep)",
+        os.path.join(outdir, "gini_final_comparison.png"),
+    )
 
+    # For CommunityPool, drop capitalist & green_capitalist from the comparison plot
+    filtered_pool = {k: v for k, v in final_pool.items() if k not in POOLLESS}
+    plot_cross_ideology_bar(
+        filtered_pool,
+        "Final CommunityPool",
+        "CommunityPool (final timestep)",
+        os.path.join(outdir, "pool_final_comparison.png"),
+    )
+
+    # Summary table
     summary_rows = []
     for ideol in IDEOLOGIES:
-        summary_rows.append({
-            "ideology": ideol,
-            "avg_lifespan": lifespan_means[ideol],
-            "avg_lifespan_std": lifespan_stds[ideol],
-            "final_AvgEnergy": final_avg_energy[ideol],
-            "final_GiniEnergy": final_gini[ideol],
-            "final_CommunityPool": final_pool[ideol],
-        })
+        summary_rows.append(
+            {
+                "ideology": ideol,
+                "avg_lifespan": lifespan_means[ideol],
+                "avg_lifespan_std": lifespan_stds[ideol],
+                "final_AvgEnergy": final_avg_energy[ideol],
+                "final_GiniEnergy": final_gini[ideol],
+                "final_CommunityPool": final_pool[ideol],  # NaN for POOLLESS ideologies
+            }
+        )
     summary_df = pd.DataFrame(summary_rows).sort_values("ideology")
     summary_df.to_csv(os.path.join(outdir, "summary.csv"), index=False)
 
