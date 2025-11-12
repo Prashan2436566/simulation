@@ -1,0 +1,28 @@
+{
+  "steps": 400,
+  "seeds": 10,
+  "agents": 15,
+  "width": 30,
+  "height": 30,
+  "ideologies": [
+    "capitalist",
+    "green_capitalist",
+    "socialist",
+    "green_socialist",
+    "communist",
+    "green_communist"
+  ],
+  "poolless": [
+    "capitalist",
+    "green_capitalist"
+  ],
+  "metrics": [
+    "AgentsAlive",
+    "AvgEnergy",
+    "CommunityPool",
+    "GiniEnergy",
+    "TotalScar",
+    "MinedRenewable",
+    "MinedNonrenewable"
+  ]
+}

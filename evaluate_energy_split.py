@@ -6,7 +6,7 @@ from mesa_sb3_env import MesaSB3Env
 
 def make_env():
     # width, height, num_agents, renewables_regenerate, ideology, max_steps
-    return MesaSB3Env(30, 30, 15, True, "adaptive", 1500)
+    return MesaSB3Env(30, 30, 15, True, "adaptive", 1000000)
 
 def run_eval(model_path="models/dqn_sb3_final.zip",
              vecnorm_path="models/vecnorm.pkl",

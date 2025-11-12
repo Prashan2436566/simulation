@@ -252,7 +252,7 @@ class IdeologyAgent(Agent):
             self.min_keep = 6.0
 
             # keep low personal cap; push surplus to pool
-            self.energy_cap = 10.0
+            self.energy_cap = 20.0
 
             # eco strictness
             self.renewable_only = True      # NEVER mine nonrenewables
