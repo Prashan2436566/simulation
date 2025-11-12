@@ -691,7 +691,69 @@ class IdeologyAgent(Agent):
                 self.mining = False
                 self.mining_target = None
             return
+        ''' Was breaking but keeping for reference and working follows similar idea
+        best_patch_pos = None
+            best_profit = -float('inf')
+            
+            # Evaluate all nonrenewable patches
+            for pos in self.model.nonrenewable_locations:
+                # Skip if occupied
+                if any(isinstance(a, IdeologyAgent) for a in self.model.grid.get_cell_list_contents([pos])):
+                    continue
+                
+                cell_objs = self.model.grid.get_cell_list_contents([pos])
+                patch = next((o for o in cell_objs if isinstance(o, ResourcePatch)
+                            and o.resource_type == "nonrenewable" and o.amount > 0), None)
+                if patch is None:
+                    continue
+                
+                # Calculate expected profit: (yield - extraction cost) / (distance + 1)
+                dist = self.manhattan_distance(self.pos, pos)
+                expected_yield = min(patch.amount, self.model.yield_per_mine_nonrenewable)
+                profit = (expected_yield - self.model.cost_extract_nonrenewable) / (dist + 1)
+                
+                if profit > best_profit:
+                    best_profit = profit
+                    best_patch_pos = pos
+            
+            # Evaluate all renewable patches (as fallback or if profitable)
+            for pos in self.model.renewable_locations:
+                # Skip if occupied
+                if any(isinstance(a, IdeologyAgent) for a in self.model.grid.get_cell_list_contents([pos])):
+                    continue
+                
+                cell_objs = self.model.grid.get_cell_list_contents([pos])
+                patch = next((o for o in cell_objs if isinstance(o, ResourcePatch)
+                            and o.resource_type == "renewable" and o.amount > 0), None)
+                if patch is None:
+                    continue
+                
+                # Calculate expected profit including setup cost if not paid
+                dist = self.manhattan_distance(self.pos, pos)
+                expected_yield = min(patch.amount, self.model.yield_per_mine_renewable)
+                setup_cost = self.model.cost_renewable_setup if patch.unique_id not in self.renewable_setup_paid else 0
+                profit = (expected_yield - self.model.cost_extract_renewable - setup_cost) / (dist + 1)
+                
+                # Only consider renewables if no profitable nonrenewable found, or if renewable is better
+                if profit > best_profit:
+                    best_profit = profit
+                    best_patch_pos = pos
 
+            # Move toward best patch
+            if best_patch_pos:
+                speed = 2 if self.energy > 15 else 1
+                self.move_towards(best_patch_pos, speed=speed)
+                if self.pos == best_patch_pos:
+                    # try repair if this is a degraded renewable
+                    if self._maybe_repair_instant():
+                        return
+                    self.mining = True
+                    self.mining_counter = 3
+                    resources_here = [o for o in self.model.grid.get_cell_list_contents([self.pos]) 
+                                    if isinstance(o, ResourcePatch)]
+                    self.mining_target = resources_here[0] if resources_here else None
+
+        '''
         # Targeting logic
         closest_nonrenewable = None
         min_dist_nonrenewable = None
@@ -994,9 +1056,9 @@ class IdeologyAgent(Agent):
         avg_energy = self.model.average_energy()
         best_pos, best_score = None, -1e18
         for res_type in ["renewable", "nonrenewable"]:
-            if avg_energy > 5 and res_type == "nonrenewable":
+            if avg_energy > 5 and res_type == "renewable":
                 continue
-            if avg_energy <= 5 and res_type == "renewable":
+            if avg_energy <= 5 and res_type == "nonrenewable":
                 continue
             locations = self.model.renewable_locations if res_type == "renewable" else self.model.nonrenewable_locations
             for pos in list(locations):
