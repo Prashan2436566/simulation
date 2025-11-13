@@ -1,6 +1,5 @@
 #python run_ideology_results.py --steps 1500 --seeds 10 --agents 15 --width 30 --height 30 --out results_ideologies_10runs
 
-#!/usr/bin/env python3
 """
 run_ideology_results.py
 
@@ -33,7 +32,7 @@ from datetime import datetime
 try:
     from model.model import IdeologyModel
 except Exception:
-    print("[ERROR] Could not import from 'model'. Run this from your project root.")
+    print("[ERROR] Could not import from 'model'. Run this from project root.")
     print("        Expected: from model.model import IdeologyModel")
     raise
 

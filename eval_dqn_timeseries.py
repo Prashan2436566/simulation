@@ -28,7 +28,7 @@ from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from mesa_sb3_env import MesaSB3Env
 
-# The metrics your DataCollector records (see run_ideology_results.py)
+
 METRICS = [
     "AgentsAlive",
     "AvgEnergy",
@@ -177,7 +177,6 @@ def main():
         json.dump(vars(args), f, indent=2)
 
     # Build eval env w/ VecNormalize stats (as in other eval scripts)
-    # (Matches patterns you use in evaluate_energy_split.py.) :contentReference[oaicite:1]{index=1}
     venv = DummyVecEnv([lambda: make_env(args.width, args.height, args.agents, args.max_steps)])
     venv = VecNormalize.load(args.vecnorm, venv)
     venv.training = False

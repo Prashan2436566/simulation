@@ -2,7 +2,7 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 
-csv = "logs/monitor.csv"  # change if needed
+csv = "logs/monitor.csv"  
 df = pd.read_csv(csv)
 
 x = df["time/total_timesteps"]

@@ -1,6 +1,4 @@
-# train_sb3_dqn.py
-# Example:
-#   python train_sb3_dqn.py --device cuda --total_timesteps 500000
+#python train_sb3_dqn.py --device cuda --total_timesteps 500000
 
 import os
 import argparse
@@ -50,7 +48,6 @@ def build_vec_env(
         make_env_fn(width, height, num_agents, max_steps, seed + i) for i in range(n_envs)
     ]
     venv = DummyVecEnv(env_fns)
-    # Per-episode logging (CSV): logs/monitor/monitor.csv
     venv = VecMonitor(venv, filename=monitor_path) if monitor_path else VecMonitor(venv)
     return venv
 
@@ -218,7 +215,6 @@ def main():
         )
 
     # ====== Configure logger: CSV + TensorBoard ======
-    # This writes: logs/dqn_csv/progress.csv and also keeps TB logs under logs/tb
     new_logger = configure(args.csv_logdir, ["csv", "tensorboard"])
     model.set_logger(new_logger)
 
@@ -227,7 +223,7 @@ def main():
     model.learn(
         total_timesteps=args.total_timesteps,
         callback=callbacks,
-        progress_bar=True,      # requires SB3 >= 1.8.0
+        progress_bar=True,     
         log_interval=10,
         tb_log_name="DQN_adaptive",
     )

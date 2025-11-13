@@ -1,5 +1,4 @@
 # mesa_sb3_env.py
-# SB3/Gymnasium wrapper that controls one 'adaptive' agent in your Mesa world.
 
 from __future__ import annotations
 
@@ -12,11 +11,9 @@ from gymnasium import spaces
 from model.model import IdeologyModel
 from model.agent import IdeologyAgent
 
-# Action mapping used by your adaptive DQN policy in agent.py:
-# ["idle","move_N","move_S","move_E","move_W","mine","repair"]
+
 MINING_ACTION = 5
 
-# Observation size your agent emits (via _state_from_obs)
 OBS_DIM = 10
 
 # ---- Potential-based shaping knobs ----
@@ -26,7 +23,6 @@ DIST_CAP       = 15      # cap distance so ΔΦ isn't extreme
 MINING_BONUS_K = 0.05    # bonus per unit actually mined this step (ren + non)
 
 # ---- Optional diagnostics/ablations applied at reset() ----
-# These are only set if the attribute exists on your model; otherwise ignored.
 ENABLE_RESPAWN = True
 MAX_RESPAWNS   = 3
 
@@ -40,11 +36,9 @@ DEBUG_TUNING: Dict[str, Any] = {
     "renewable_overuse_trigger": 10,
     "renewable_fatigue_decay": 2,
 
-    # (Optional) make non-renewables last a bit longer in tests (only if supported)
     # "nonrenewable_initial_amount": 200,
     # "nonrenewable_yield": 2.0,
 
-    # (Optional) survival tweaks if your model exposes them
     # "basic_income": 0.2,
     # "starting_energy": 120.0,
 }

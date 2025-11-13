@@ -1,7 +1,3 @@
-# dqn.py
-# Lightweight DQN for your adaptive agent (vector observations).
-# Exposes: DQNConfig, DQN with act/push/learn/save APIs.
-
 from dataclasses import dataclass
 from typing import Optional
 import os

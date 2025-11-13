@@ -3,11 +3,7 @@ from server.server import model_params
 """
 Things to add
 
-adaptive reward function based on time survived
-procreate
-cluster of resources
-shocks
-r&d/ innovation
+
 """
 # ideology
 SELECTED_IDEOLOGY = "capitalist" 

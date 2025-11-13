@@ -4,7 +4,6 @@ import argparse, random
 import numpy as np
 import pandas as pd
 
-# Import your model exactly like the UI does
 from model.model import IdeologyModel
 
 def run_once(steps: int, ideology: str, seed: int | None, overrides: dict) -> tuple[pd.DataFrame, pd.DataFrame]:
