@@ -1,4 +1,3 @@
-# evaluate_energy_split.py
 import numpy as np
 from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize

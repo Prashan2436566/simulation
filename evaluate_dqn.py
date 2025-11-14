@@ -1,4 +1,3 @@
-#python evaluate_dqn.py
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize

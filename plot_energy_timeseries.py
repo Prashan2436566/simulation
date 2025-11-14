@@ -1,4 +1,3 @@
-# plot_energy_timeseries_all.py
 import csv, os, argparse
 import numpy as np
 import matplotlib.pyplot as plt
@@ -10,7 +9,6 @@ def make_env(width=30, height=30, num_agents=15, max_steps=1500):
     return MesaSB3Env(width, height, num_agents, True, "adaptive", max_steps)
 
 def run_episode(model, venv):
-    """Return per-step time series: steps, ren_step, non_step, cum_ren, cum_non."""
     obs = venv.reset()
     steps, ren_s, non_s, cum_ren, cum_non = [], [], [], [], []
     c_ren = 0.0
@@ -46,12 +44,9 @@ def save_csv(path, steps, ren_step, non_step, cum_ren, cum_non):
                         float(cum_ren[i]), float(cum_non[i]), float(cum_ren[i]+cum_non[i])])
 
 def plot_concat(all_series, out_png):
-    """Concatenate episodes into one long timeline and plot cumulative totals."""
-    # Build one long timeline
     x, cum_ren, cum_non = [], [], []
     offset = 0
     for (steps, _, _, c_ren, c_non) in all_series:
-        # Rebase steps to continuous timeline
         x.extend(list(steps + offset))
         cum_ren.extend(list(c_ren + (cum_ren[-1] if cum_ren else 0.0)))
         cum_non.extend(list(c_non + (cum_non[-1] if cum_non else 0.0)))
@@ -71,8 +66,6 @@ def plot_concat(all_series, out_png):
     print(f"[OK] Saved: {out_png}")
 
 def plot_align(all_series, max_steps, out_png):
-    """Align episodes to step t=1..max_steps and plot mean±std of cumulative curves."""
-    # Pad each episode to max_steps by carrying forward last value
     def pad_to(arr, T):
         if len(arr) >= T: return arr[:T]
         if len(arr) == 0: return np.zeros(T)
@@ -85,7 +78,7 @@ def plot_align(all_series, max_steps, out_png):
         cum_ren_mat.append(pad_to(c_ren, max_steps))
         cum_non_mat.append(pad_to(c_non, max_steps))
 
-    cum_ren_mat = np.vstack(cum_ren_mat)   # [episodes, T]
+    cum_ren_mat = np.vstack(cum_ren_mat) 
     cum_non_mat = np.vstack(cum_non_mat)
 
     mean_ren, std_ren = np.mean(cum_ren_mat, axis=0), np.std(cum_ren_mat, axis=0)
@@ -127,12 +120,10 @@ def main():
     venv.norm_reward = False
     model = DQN.load(args.model, env=venv, device="auto")
 
-    # Collect per-episode time series
     all_series = []
     for ep in range(args.episodes):
         series = run_episode(model, venv)
         all_series.append(series)
-        # Save each episode CSV for debugging
         csv_path = f"{args.out_prefix}_ep{ep+1}.csv"
         save_csv(csv_path, *series)
         print(f"[OK] Episode {ep+1} saved: {csv_path}")

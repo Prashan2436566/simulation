@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
   python eval_dqn_timeseries.py --model models/dqn_sb3_final.zip --vecnorm models/vecnorm.pkl --episodes 10 --width 30 --height 30 --agents 15 --max_steps 400 --out dqn_results_runlike
 """

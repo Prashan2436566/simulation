@@ -1,4 +1,3 @@
-# eval_sb3_dqn.py
 from stable_baselines3 import DQN
 from mesa_sb3_env import MesaSB3Env
 
