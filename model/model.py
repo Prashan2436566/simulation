@@ -6,7 +6,7 @@ from mesa.datacollection import DataCollector
 import random
 
 from .agent import IdeologyAgent, ResourcePatch, EnergyHub
-
+from ..sb3_shared_policy import SB3SharedPolicy
 
 class LegendElement(TextElement):
     def render(self, model):
