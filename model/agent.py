@@ -1198,7 +1198,6 @@ class IdeologyAgent(Agent):
             self.model.dqn_eps = self.rl_epsilon         
             self.model.dqn_global_step = 0
 
- 
         s = self._state_from_obs()
         s_vec = self._vec_from_state(s)
         successful_mine = False
@@ -1206,18 +1205,18 @@ class IdeologyAgent(Agent):
         successful_repair = False
 
         eps = getattr(self.model, "dqn_eps", 0.10)
-
-        if hasattr(self.model, "external_action_idx") and self.model.external_action_idx is not None:
-            a_idx = int(self.model.external_action_idx)
-            self.model.external_action_idx = None 
-        else:
+        used_external = False
+        if hasattr(self.model, "external_action_map"):
+            uid = self.unique_id
+            if uid in self.model.external_action_map:
+                a_idx = int(self.model.external_action_map[uid])
+                used_external = True
+        if not used_external:
             eps = getattr(self.model, "dqn_eps", self.rl_epsilon)
             a_idx = self.model.dqn.act(s_vec, eps)
 
-
         actions = self.model.dqn_actions 
         a = actions[a_idx]
-
 
         energy_before = self.energy
 
@@ -1235,18 +1234,15 @@ class IdeologyAgent(Agent):
             cell = self.model.grid.get_cell_list_contents([self.pos])
             patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
             if patch and not (getattr(patch, "degraded", False) or getattr(patch, "under_maintenance", False) or getattr(patch, "is_degraded", False)) and patch.amount > 0:
-                # renewable one-time setup
                 if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
                     setup = self.model.cost_renewable_setup
                     if self.energy >= setup:
                         self.energy -= setup
                         self.renewable_setup_paid.add(patch.unique_id)
-                # start a short burst if allowed
                 if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
                     self.mining = True
                     self.mining_counter = getattr(self, "adaptive_mine_ticks", 3)
                     self.mining_target = patch
-
 
                     desired = self.model.yield_per_mine_renewable if patch.resource_type == "renewable" else self.model.yield_per_mine_nonrenewable
                     op_cost = self.model.cost_extract_renewable if patch.resource_type == "renewable" else self.model.cost_extract_nonrenewable
@@ -1261,7 +1257,7 @@ class IdeologyAgent(Agent):
                     if not hasattr(self.model, "mined_renewable_total"):
                         self.model.mined_renewable_total = 0.0
                     if not hasattr(self.model, "mined_nonrenewable_total"):
-                        self.model.mined_nonrenewable_total = 0.0
+                        self.model.mined_nonrenewale_total = 0.0
 
                     if patch.resource_type == "renewable":
                         self.model.mined_renewable_total += float(max(gained, 0.0))
@@ -1269,7 +1265,6 @@ class IdeologyAgent(Agent):
                         self.model.mined_nonrenewable_total += float(max(gained, 0.0))
                     if net > 0:
                         self.total_collected_energy += net
-                    # remove empty nonrenewable
                     if patch.amount <= 0 and patch.resource_type == "nonrenewable":
                         try:
                             self.model.grid.remove_agent(patch)
@@ -1281,7 +1276,6 @@ class IdeologyAgent(Agent):
                                 self.model.nonrenewable_locations.remove(patch.pos)
                         except ValueError:
                             pass
-
 
                     self.mining_counter -= 1
                     if self.mining_counter <= 0:
@@ -1315,22 +1309,19 @@ class IdeologyAgent(Agent):
                 self.model.schedule.remove(self)
                 self.deaths += 1
                 self.episodes += 1
-
             except Exception:
                 pass
 
         survive_bonus = 1.0 if (self.energy > 0) else DEATH_PEN
-        dE = (self.energy - energy_before+UPCOMING_UPKEEP)
+        dE = (self.energy - energy_before + UPCOMING_UPKEEP)
         r = survive_bonus + SHAPING_K * dE
 
-  
         if successful_mine:
             r += 0.05 * gained_amount
         if successful_repair:
             r += 0.5
         self.last_reward = float(r)
 
-  
         s2 = self._state_from_obs() if not done else s  
         s2_vec = self._vec_from_state(s2)
         self.model.dqn.push(s_vec, actions.index(a), float(r), s2_vec, done)
@@ -1343,7 +1334,6 @@ class IdeologyAgent(Agent):
             self.model.dqn_last_loss = float(loss)
         self.model.dqn_replay_size = int(self.model.dqn.replay.size)
         self.model.dqn_steps = int(getattr(self.model, "dqn_steps", 0)) + 1
-
 
         self.model.dqn_eps = max(self.rl_epsilon_min, self.model.dqn_eps * self.rl_epsilon_decay)
         if (self.model.dqn_global_step % 5000) == 0:
