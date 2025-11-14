@@ -1,1 +1,23 @@
-SImulation for Honours Project
+Simulation for Honours Project
+This project simulates how different sociopolitical ideologies manage limited energy resources in a shared environment. It extends the Sugarscape agent-based model to include renewable and non-renewable patches, ecological degradation, redistribution systems, environmental policies, and cooperative infrastructure building.
+
+Six ideological agents are implemented: capitalist, green capitalist, socialist, green socialist, communist, and green communist. Each ideology follows its own rule-based decision logic for movement, mining, cooperation, and repair.
+
+The simulation also includes adaptive reinforcement learning agents. One uses a custom Deep Q-Network (DQN) trained inside the Mesa simulation, and the other uses a Stable-Baselines3 DQN trained externally through a Gymnasium wrapper.
+
+The system provides real-time visualisation and detailed logging of metrics such as energy, inequality, scarcity, scar accumulation, and resource extraction. This allows direct comparison of sustainability, efficiency, and survival across ideological strategies and adaptive learning approaches.
+project/
+│
+├── model/
+│   ├── model.py            # Core Mesa model (environment, resources, global rules)
+│   ├── agent.py            # IdeologyAgent + ResourcePatch + EnergyHub
+│   └── dqn.py              # Lightweight custom DQN used inside Mesa
+│
+├── server/
+│   └── server.py           # Mesa visualisation server (CanvasGrid + charts)
+│
+├── mesa_sb3_env.py         # SB3/Gymnasium wrapper around adaptive agent
+├── train_sb3_dqn.py        # Full external DQN training script (SB3)
+├── main.py                 # Launches Mesa visualisation
+│
+└── README.md               # (this file)
