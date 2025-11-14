@@ -69,12 +69,12 @@ class IdeologyModel(Model):
         renewable_cooldown_steps: int = 5,
         renewable_overuse_trigger: int = 6,
         renewable_fatigue_decay: int = 1,
-        # Redistribution safety floor (used by socialist sharing + repair heuristics)
+        # Redistribution safety
         pool_floor: float = 10.0,
-        # Degradation controls (periodic chance to degrade one renewable)
+        # Degradation controls 
         degrade_period: int = 10,
         degrade_chance: float = 0.5,
-        # Instant repair cost (energy spent by a repairing agent)
+        # Instant repair cost 
         repair_energy_cost: float = 10.0,
     ) -> None:
         self.current_id = 0
@@ -108,15 +108,15 @@ class IdeologyModel(Model):
         self.redistribute_every = 5
         self.share_floor = 6.0
         self._since_last_redistribute = 0
-        self.pool_floor = pool_floor  # agents won’t donate below this
+        self.pool_floor = pool_floor  
 
-        # Environmental scar mechanics
+        # Environmental scar
         self.scar_radius = 1
         self.scar_increase_per_unit = 0.15
         self.scar_decay = 0.02
         self.scar_regen_alpha = 0.5
         self.scar_max = 3.0
-        self.scar_collapse_threshold = 1.0  # if scar >= this, renewable collapses
+        self.scar_collapse_threshold = 1.0  
 
         # Green policy knobs
         self.carbon_tax_per_unit = 0.5
@@ -145,20 +145,18 @@ class IdeologyModel(Model):
         self._scatter_resources("renewable", 100)
         self._scatter_resources("nonrenewable", 100)
 
-        #adaptive RL params
-        #self.max_adaptive_respawns = float("inf")
-        self.max_adaptive_respawns = 0
-        self.q_init = 15.0  # optimistic initial Q for adaptive agents (≈ 1/(1-γ) with γ=0.95 → 20)
 
-        # Totals that batch/visualization will read
+        self.max_adaptive_respawns = 0
+        self.q_init = 15.0 
+
         self.mined_renewable_total = 0.0
         self.mined_nonrenewable_total = 0.0
 
-        # Optional DQN diagnostics (so they exist from step 0)
+
         self.dqn_replay_size = 0
         self.dqn_last_loss = float("nan")
         self.dqn_steps = 0
-        # self.dqn_eps is created when DQN lazy-inits; that's fine
+
 
 
         # Spawn agents
@@ -169,7 +167,7 @@ class IdeologyModel(Model):
             self.grid.place_agent(agent, (x, y))
             self.schedule.add(agent)
 
-        # Data collector for charts
+        # Data collecto
         self.datacollector = DataCollector(
             model_reporters={
                 "Ideology_adaptive": lambda m: sum(
@@ -198,7 +196,7 @@ class IdeologyModel(Model):
                 ),
                 "Renewables": lambda m: len(m.renewable_locations),
                 "NonRenewables": lambda m: len(m.nonrenewable_locations),
-                "InfrastructureSites": lambda m: 0,  # placeholder
+                "InfrastructureSites": lambda m: 0,  
                 "AgentsAlive": lambda m: sum(1 for a in m.schedule.agents if hasattr(a, "energy")),
                 "GiniEnergy": lambda m: m.gini_energy(),
                 "AvgAdaptiveReward": lambda m: (
@@ -222,7 +220,6 @@ class IdeologyModel(Model):
         self.shared_q_table = {}
 
 
-    # ---------- world setup ----------
     def _scatter_resources(self, resource_type: str, num_patches: int) -> None:
         placed = 0
         while placed < num_patches:
@@ -239,9 +236,7 @@ class IdeologyModel(Model):
                     self.renewable_locations.append((x, y))
                 placed += 1
 
-    # ---------- degrade control ----------
     def degrade_random_renewable(self):
-        """Pick one healthy renewable and mark it degraded (if any)."""
         candidates = []
         for pos in list(self.renewable_locations):
             cell = self.grid.get_cell_list_contents([pos])
@@ -251,7 +246,6 @@ class IdeologyModel(Model):
         if candidates:
             self.random.choice(candidates).mark_degraded()
 
-    # ---------- redistribution ----------
     def redistribute_pool(self):
         agents = [a for a in self.schedule.agents if hasattr(a, "energy")]
         needy = [a for a in agents if a.energy < self.share_floor]
@@ -267,15 +261,13 @@ class IdeologyModel(Model):
             a.energy += give
             self.community_pool -= give
 
-    # ---------- step ----------
     def step(self) -> None:
-        # periodic degrade
         self.step_count += 1
         if self.degrade_period > 0:
             if self.step_count % self.degrade_period == 0 and self.random.random() < self.degrade_chance:
                 self.degrade_random_renewable()
 
-        # reset per-step mined counters
+
         self._mined_renewable_this_step = 0
         self._mined_nonrenewable_this_step = 0
 
@@ -290,17 +282,15 @@ class IdeologyModel(Model):
             self.redistribute_pool()
             self._since_last_redistribute = 0
 
-        # advance
         self.schedule.step()
 
-        # publish this step’s mined totals
+
         self.mined_renewable_last_step = self._mined_renewable_this_step
         self.mined_nonrenewable_last_step = self._mined_nonrenewable_this_step
 
-        # collect for charts
+
         self.datacollector.collect(self)
 
-    # ---------- utils ----------
     def next_id(self) -> int:
         self.current_id += 1
         return self.current_id

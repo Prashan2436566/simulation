@@ -60,7 +60,7 @@ def main():
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out_prefix", type=str, default="results")
     p.add_argument("--num_agents", type=int, default=15)
-    p.add_argument("--renewables_regenerate", type=int, default=1)  # 1/0
+    p.add_argument("--renewables_regenerate", type=int, default=1) 
     args = p.parse_args()
 
     overrides = {

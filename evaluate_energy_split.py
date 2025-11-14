@@ -5,13 +5,11 @@ from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 from mesa_sb3_env import MesaSB3Env
 
 def make_env():
-    # width, height, num_agents, renewables_regenerate, ideology, max_steps
     return MesaSB3Env(30, 30, 15, True, "adaptive", 1000000)
 
 def run_eval(model_path="models/dqn_sb3_final.zip",
              vecnorm_path="models/vecnorm.pkl",
              episodes=20):
-    # Build eval env
     venv = DummyVecEnv([make_env])
     venv = VecNormalize.load(vecnorm_path, venv)
     venv.training = False
@@ -30,13 +28,11 @@ def run_eval(model_path="models/dqn_sb3_final.zip",
 
         while True:
             action, _ = model.predict(obs, deterministic=True)
-            # SB3 VecEnv returns 4 values: obs, rewards, dones, infos
             obs, rewards, dones, infos = venv.step(action)
             cum_rew += float(rewards[0])
             steps += 1
 
-            if bool(dones[0]):  # episode ended (terminated OR truncated)
-                # info keys set by MesaSB3Env at episode end
+            if bool(dones[0]):  
                 last_info = infos[0] if isinstance(infos, (list, tuple)) else infos
                 break
 

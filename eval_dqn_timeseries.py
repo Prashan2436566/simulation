@@ -1,21 +1,5 @@
 #!/usr/bin/env python3
 """
-Evaluate a trained SB3 DQN on the Mesa environment and export time-series
-metrics similar to run_ideology_results.py, specifically:
-
-  - AgentsAlive
-  - AvgEnergy
-  - GiniEnergy
-  - TotalScar
-  - MinedRenewable
-  - MinedNonrenewable
-
-Outputs:
-  • Per-episode CSVs (step-indexed timeseries)
-  • Mean±Std CSV across episodes (aligned by step, padding with last value)
-  • Line plots per metric (mean with ±std band)
-
-Usage:
   python eval_dqn_timeseries.py --model models/dqn_sb3_final.zip --vecnorm models/vecnorm.pkl --episodes 10 --width 30 --height 30 --agents 15 --max_steps 400 --out dqn_results_runlike
 """
 
@@ -42,32 +26,21 @@ def make_env(width=30, height=30, num_agents=15, max_steps=1500):
     return MesaSB3Env(width, height, num_agents, True, "adaptive", max_steps)
 
 def _get_latest_metrics_from_model(model_obj):
-    """
-    Read the latest row from the model.datacollector for the metrics we care about.
-    Returns (dict metric->value, step_index) where step_index is 0-based.
-    """
     df = model_obj.datacollector.get_model_vars_dataframe()
     if len(df) == 0:
-        # Before first step, return NaNs
         return {k: np.nan for k in METRICS}, 0
     row = df.iloc[-1]
     out = {}
     for k in METRICS:
         out[k] = float(row[k]) if k in df.columns else np.nan
-    # DataCollector uses the row index as timestep (starts at 0)
     step_idx = int(df.index[-1]) if df.index.dtype.kind in ("i", "u") else len(df) - 1
     return out, step_idx
 
 def _get_base_model_from_vecenv(venv):
-    """
-    Pull the underlying Mesa model from a VecNormalize(DummyVecEnv(...)).
-    Uses get_attr pass-through to access sub-env attributes.
-    """
     try:
         models = venv.get_attr("model")
         return models[0]
     except Exception:
-        # Fallback: drill down (VecNormalize -> DummyVecEnv -> envs[0])
         try:
             base_env = venv.venv.envs[0]
             return getattr(base_env, "model", None)
@@ -75,10 +48,6 @@ def _get_base_model_from_vecenv(venv):
             return None
 
 def run_one_episode(model, venv, episode_id, outdir):
-    """
-    Run one episode and return a per-step DataFrame with the chosen metrics.
-    Also saves a CSV for this episode.
-    """
     obs = venv.reset()
     rows = []
 
@@ -105,10 +74,6 @@ def run_one_episode(model, venv, episode_id, outdir):
     return df
 
 def align_and_aggregate(dfs, max_steps):
-    """
-    Align each episode's timeseries to length max_steps by forward-filling
-    the last observed value. Then compute mean and std per step.
-    """
     def pad_forward(series, T):
         if len(series) == 0:
             return np.full(T, np.nan)
@@ -118,7 +83,6 @@ def align_and_aggregate(dfs, max_steps):
         pad = np.full(T - len(series), last)
         return np.concatenate([series.to_numpy(), pad])
 
-    # Build matrices [episodes x T] for each metric
     mats_mean = {}
     mats_std = {}
     xs = np.arange(max_steps)
@@ -126,10 +90,9 @@ def align_and_aggregate(dfs, max_steps):
     for m in METRICS:
         mat = []
         for df in dfs:
-            # Ensure continuous timesteps starting at 0; if missing, forward-fill
             s = df[m]
             mat.append(pad_forward(s, max_steps))
-        mat = np.vstack(mat)  # [E, T]
+        mat = np.vstack(mat)  
         mats_mean[m] = np.nanmean(mat, axis=0)
         mats_std[m] = np.nanstd(mat, axis=0)
 
@@ -176,7 +139,6 @@ def main():
     with open(os.path.join(args.out, "config.json"), "w") as f:
         json.dump(vars(args), f, indent=2)
 
-    # Build eval env w/ VecNormalize stats (as in other eval scripts)
     venv = DummyVecEnv([lambda: make_env(args.width, args.height, args.agents, args.max_steps)])
     venv = VecNormalize.load(args.vecnorm, venv)
     venv.training = False
@@ -184,19 +146,16 @@ def main():
 
     model = DQN.load(args.model, env=venv, device="auto")
 
-    # Run episodes, collect per-step DataFrames
     ep_dfs = []
     for ep in range(1, args.episodes + 1):
         df = run_one_episode(model, venv, ep, args.out)
         ep_dfs.append(df)
 
-    # Aggregate as mean ± std across episodes (aligned by step)
     agg = align_and_aggregate(ep_dfs, args.max_steps)
     agg_csv = os.path.join(args.out, "timeseries_mean_std.csv")
     agg.to_csv(agg_csv, index=False)
     print(f"[OK] Mean±Std CSV -> {agg_csv}")
 
-    # Plots per metric (line with ±std band), same idea as ideology script. :contentReference[oaicite:2]{index=2}
     for m in METRICS:
         plot_metric(agg, m, args.out, title_prefix="DQN")
 

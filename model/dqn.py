@@ -15,13 +15,13 @@ class DQNConfig:
     gamma: float = 0.95
     batch_size: int = 64
     buffer_size: int = 100_000
-    start_learning: int = 1_000        # warmup transitions before learning
+    start_learning: int = 1_000        
     target_update_interval: int = 1_000
-    train_interval: int = 1            # learn every N env steps
+    train_interval: int = 1            
     grad_clip: float = 1.0
-    double_q: bool = True              # Double DQN
+    double_q: bool = True             
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
-    save_path: str = "dqn_adaptive.pt" # checkpoint path
+    save_path: str = "dqn_adaptive.pt" 
 
 
 class QNetwork(nn.Module):
@@ -70,18 +70,6 @@ class ReplayBuffer:
 
 
 class DQN:
-    """
-    Minimal DQN with:
-      - MLP Q-network + target net
-      - Replay buffer
-      - Double DQN targets (optional)
-      - Periodic hard target update
-    API:
-      act(state_vec: np.ndarray, epsilon: float) -> int
-      push(s, a, r, s2, done) -> None
-      learn(global_step: Optional[int]) -> Optional[float]
-      save() -> None
-    """
     def __init__(self, cfg: DQNConfig):
         self.cfg = cfg
         self.device = torch.device(cfg.device)
@@ -94,7 +82,6 @@ class DQN:
         self.replay = ReplayBuffer(cfg.buffer_size, cfg.state_dim)
         self.global_step = 0
 
-        # Try to resume
         if os.path.exists(cfg.save_path):
             try:
                 payload = torch.load(cfg.save_path, map_location=self.device)
@@ -117,11 +104,10 @@ class DQN:
 
     @torch.no_grad()
     def act(self, state_vec: np.ndarray, epsilon: float) -> int:
-        # state_vec shape: (state_dim,)
         if np.random.rand() < epsilon:
             return np.random.randint(self.cfg.n_actions)
         x = torch.tensor(state_vec, dtype=torch.float32, device=self.device).unsqueeze(0)
-        qv = self.q(x)  # (1, n_actions)
+        qv = self.q(x)  
         return int(qv.argmax(dim=1).item())
 
     def push(self, s, a, r, s2, done):
@@ -135,9 +121,8 @@ class DQN:
 
         with torch.no_grad():
             if self.cfg.double_q:
-                # action selection under online net
+                # action selection 
                 a_max = self.q(s2).argmax(dim=1, keepdim=True)
-                # action evaluation under target net
                 q_next = self.target(s2).gather(1, a_max).squeeze(1)
             else:
                 q_next = self.target(s2).max(dim=1).values
@@ -147,7 +132,6 @@ class DQN:
         return nn.functional.smooth_l1_loss(q_sa, target)
 
     def learn(self, global_step: Optional[int] = None) -> Optional[float]:
-        # Update internal step
         self.global_step = int(global_step if global_step is not None else self.global_step + 1)
 
         if self.replay.size < self.cfg.start_learning:

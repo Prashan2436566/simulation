@@ -9,9 +9,7 @@ try:
 except Exception:
     from .dqn import DQN, DQNConfig
 
-# =========================
-# Resource / Structure
-# =========================
+
 class ResourcePatch(Agent):
     """Grid patch holding either renewable or nonrenewable resources."""
     def __init__(
@@ -23,26 +21,25 @@ class ResourcePatch(Agent):
         regen_rate: int = 1,
     ) -> None:
         super().__init__(unique_id, model)
-        self.resource_type = resource_type  # "renewable" or "nonrenewable"
+        self.resource_type = resource_type  # renewable or nonrenewable
         self.amount = max_capacity
         self.max_capacity = max_capacity
         self.base_regen_rate = regen_rate if resource_type == "renewable" else 0
         self.regen_rate = self.base_regen_rate
 
-        # Overuse dynamics
+        # Overuse
         self.cooldown_remaining = 0
         self.fatigue = 0
 
-        # Environment
+        # Env
         self.scar_level: float = 0.0
 
-        # Degradation (offline until repaired)
         self.is_degraded: bool = False
-        # compatibility flags for your current CanvasGrid portrayal
+        
         self.degraded: bool = False
-        self.under_maintenance: bool = False  # not actively used here, but kept for UI
+        self.under_maintenance: bool = False 
 
-    # ----- degrade helpers -----
+    #degard
     def mark_degraded(self):
         self.is_degraded = True
         self.degraded = True
@@ -53,7 +50,7 @@ class ResourcePatch(Agent):
         self.under_maintenance = False
 
     def step(self) -> None:
-        # decay scars
+        #scar decay
         if self.scar_level > 0:
             self.scar_level = max(0.0, self.scar_level - self.model.scar_decay)
 
@@ -86,7 +83,7 @@ class ResourcePatch(Agent):
                 penalty = max(0.0, 1.0 - self.model.scar_regen_alpha * self.scar_level)
                 self.regen_rate = self.base_regen_rate * penalty
 
-        # apply regen unless degraded (degraded = offline)
+        # apply regen unless degraded 
         if self.regen_rate > 0 and not self.is_degraded:
             self.amount = min(self.max_capacity, self.amount + self.regen_rate)
 
@@ -111,7 +108,7 @@ class ResourcePatch(Agent):
             if self.amount <= 0 or self.fatigue >= self.model.renewable_overuse_trigger:
                 self.cooldown_remaining = max(self.cooldown_remaining, self.model.renewable_cooldown_steps)
 
-        # Nonrenewable spill -> scar nearby renewables
+        # Nonrenewable spill scar nearby renewables
         if self.resource_type == "nonrenewable" and collected > 0:
             radius = self.model.scar_radius
             bump = self.model.scar_increase_per_unit * collected
@@ -125,19 +122,17 @@ class ResourcePatch(Agent):
 
 
 class EnergyHub(Agent):
-    """Built on a renewable patch by at least 2 socialist agents. Improves mining efficiency."""
     def __init__(self, unique_id, model, pos):
         super().__init__(unique_id, model)
         self.pos = pos
         self.built = True
 
     def step(self):
-        pass  # passive structure
+        pass  
 
 
-# =========================
+
 # Agents
-# =========================
 class IdeologyAgent(Agent):
     def __init__(self, unique_id: int, model, ideology: str) -> None:
         super().__init__(unique_id, model)
@@ -150,7 +145,7 @@ class IdeologyAgent(Agent):
         self.model.total_agents_created += 1
         self.renewable_setup_paid: set[int] = set()
 
-        # Socialist-ish tuning
+        #soci
         self.share_radius = 1
         self.share_fraction = 0.60
         self.min_keep = 8.0
@@ -166,14 +161,13 @@ class IdeologyAgent(Agent):
         self.last_reward = 0.0
 
 
-        # --- RL (Adaptive) setup ---
+        #RL
         if ideology == "adaptive":
-            # (your existing init stays)
+            
             self.energy = 20.0
             self.emergency_floor = 6.0
             self.adaptive_mine_ticks = 3
 
-            # keep these for epsilon scheduling + consistency with tabular version
             self.rl_gamma = 0.95
             self.rl_epsilon = 0.90
             self.rl_epsilon_min = 0.05
@@ -183,19 +177,17 @@ class IdeologyAgent(Agent):
 
 
         elif ideology == "adaptive_direct":
-            # survival-focused, but with a simplified action space
             self.energy = 20.0
             self.emergency_floor = 6.0
             self.adaptive_mine_ticks = 3
 
-            # RL knobs (reuse same defaults)
             self.rl_alpha = 0.2
             self.rl_gamma = 0.95
             self.rl_epsilon = 0.3
             self.rl_epsilon_min = 0.05
             self.rl_epsilon_decay = 0.995
 
-            # tabular Q + limited action set
+            # tabular Q
             self.model.shared_q_table: dict[tuple, dict[str, float]] = {}
             self.RL_ACTIONS = [
                 "goto_nearest_non",
@@ -206,7 +198,6 @@ class IdeologyAgent(Agent):
             self._last_state = None
             self._last_action = None
 
-            # respawn-with-memory options (mirror adaptive)
             self.max_adaptive_respawns = getattr(self.model, "max_adaptive_respawns", float("inf"))
             self.q_init = getattr(self.model, "q_init", 15.0)
 
@@ -214,8 +205,6 @@ class IdeologyAgent(Agent):
 
             self.use_mc_terminal_updates = False
             self.episode_traj = []
-
-            # no built-in renewable bias unless you set it in the model
             self.renewable_bias = getattr(self.model, "adaptive_renewable_bias", 0)
         if ideology in ("adaptive", "adaptive_direct"):
             path = f"qtable_{ideology}.pkl"
@@ -223,44 +212,39 @@ class IdeologyAgent(Agent):
                 self.model.shared_q_table = pickle.load(open(path, "rb"))
 
         elif ideology == "communist":
-            # Collective-first defaults
             self.energy = 12.0
             self.emergency_floor = 6.0
 
-            # sharing: aggressive + wider radius
             self.share_radius = 2
-            self.share_fraction = 1.0     # share (nearly) everything above a small floor
+            self.share_fraction = 1.0     # share almsot everything above a small floor
             self.min_keep = 6.0
 
-            # strict personal cap; push surplus to pool
+
             self.energy_cap = 10.0
 
-            # strong renewable bias & cooperative building
+            # strong renewable bias 
             self.renewable_bias = 4
             self.coop_build_time = 2
             self.build_counter = 0
             self.intent_build = False
 
         elif ideology == "green_communist":
-            # Collective + eco-first defaults
             self.energy = 12.0
             self.emergency_floor = 6.0
 
-            # sharing: wide & strong
+            # sharing
             self.share_radius = 2
             self.share_fraction = 1.0
             self.min_keep = 6.0
 
-            # keep low personal cap; push surplus to pool
             self.energy_cap = 20.0
 
             # eco strictness
-            self.renewable_only = True      # NEVER mine nonrenewables
-            self.scar_avoid = 3.0           # avoid high-scar tiles
+            self.renewable_only = True      
+            self.scar_avoid = 3.0         
             self.overuse_trigger = getattr(self.model, "renewable_overuse_trigger", 6)
             self.cooldown_steps = getattr(self.model, "renewable_cooldown_steps", 5)
 
-            # coop building / repairs are prioritized
             self.coop_build_time = 2
             self.build_counter = 0
             self.intent_build = False
@@ -271,7 +255,6 @@ class IdeologyAgent(Agent):
     def _vec_from_state(self, s_tuple):
         return np.asarray(s_tuple, dtype=np.float32)
 
-    # ---------- COMMON PER-TICK ----------
     def step(self) -> None:
         if self.ideology == "socialist":
             self.socialist_step()
@@ -321,7 +304,6 @@ class IdeologyAgent(Agent):
             pass
 
     def _find_spawn_cell(self, max_tries: int = 1000):
-        """Find a random empty cell; fallback to center if none found."""
         W, H = self.model.width, self.model.height
         for _ in range(max_tries):
             pos = (random.randrange(W), random.randrange(H))
@@ -334,66 +316,50 @@ class IdeologyAgent(Agent):
         return (W // 2, H // 2)
 
     def _respawn_with_memory(self):
-        # Model-level cap (default: inf)
+        
         limit = getattr(self.model, "max_adaptive_respawns", float("inf"))
 
-        # Ensure counters exist
         if not hasattr(self, "episodes"):
             self.episodes = 0
         if not hasattr(self, "deaths"):
             self.deaths = 0
 
-        # Stop if we've hit the cap
         if self.episodes >= limit:
             return
 
-        # -------- Inherit state from the old body --------
         inherited_eps = getattr(self, "rl_epsilon", 0.9)
         inherited_eps_count = getattr(self, "episodes", 0)
         inherited_mc = getattr(self, "use_mc_terminal_updates", False)
 
-        # (Q-table is shared on the model; keep using that single source of truth)
         inherited_q = getattr(self.model, "shared_q_table", None)
 
-        # Update counters on the old body
         self.deaths += 1
         self.episodes += 1
 
-        # Remove the old body
-        self._remove_self()  # assumes your existing helper handles grid + schedule removal
+        self._remove_self()  
 
-        # -------- Create successor --------
         succ = IdeologyAgent(self.model.next_id(), self.model, ideology="adaptive")
-
-        # Carry over epsilon (slightly annealed down)
         succ.rl_epsilon = max(getattr(succ, "rl_epsilon_min", 0.05), inherited_eps * 0.98)
         succ.episodes = inherited_eps_count  # history
         succ.deaths = getattr(self, "deaths", 0)
 
-        # Make sure successor obeys the same model-level cap
-        # (Don't store a per-agent cap; always read from model)
-        # succ.max_adaptive_respawns = limit  # <- not needed, read from self.model
-
-        # Carry over optional flags
         succ.use_mc_terminal_updates = inherited_mc
 
-        # If your code sometimes expects a per-agent q_table pointer, keep it aligned
+
         if inherited_q is not None:
             try:
                 succ.q_table = inherited_q
             except Exception:
                 pass
 
-        # -------- Place successor --------
         spawn_pos = None
         try:
             spawn_pos = self._find_spawn_cell()
         except Exception:
             spawn_pos = None
 
-        # Fallback to a random empty cell if needed
         if not spawn_pos:
-            # scan for an empty cell
+            # scan empcell
             for x in range(self.model.width):
                 for y in range(self.model.height):
                     if not self.model.grid.get_cell_list_contents((x, y)):
@@ -401,7 +367,6 @@ class IdeologyAgent(Agent):
                         break
                 if spawn_pos:
                     break
-            # last resort: clamp to (0,0)
             if not spawn_pos:
                 spawn_pos = (0, 0)
 
@@ -410,11 +375,6 @@ class IdeologyAgent(Agent):
 
 
     def _mc_update_on_death(self):
-        """
-        Monte Carlo credit assignment with terminal-only reward for survival.
-        If an episode lasted T steps, each (s_t, a_t) gets return G_t = γ^(T-1-t).
-        Only used if self.use_mc_terminal_updates is True.
-        """
         traj = getattr(self, "episode_traj", [])
         if not traj:
             return
@@ -425,9 +385,8 @@ class IdeologyAgent(Agent):
             row[a] += self.rl_alpha * (G - row[a])
         self.episode_traj.clear()
 
-    # ---------- MAINTENANCE HELPERS ----------
+    # maintenane
     def _nearest_degraded_patch(self):
-        """Return (pos, dist, patch) for closest degraded renewable."""
         best = (None, 10**9, None)
         for pos in list(self.model.renewable_locations):
             cell = self.model.grid.get_cell_list_contents([pos])
@@ -440,7 +399,6 @@ class IdeologyAgent(Agent):
         return best
 
     def _should_repair(self, patch) -> bool:
-        """Ideology-specific willingness to spend energy to repair."""
         cost = getattr(self.model, "repair_energy_cost", 10.0)
         if self.energy < cost:
             return False
@@ -464,24 +422,17 @@ class IdeologyAgent(Agent):
             return self.energy >= max(floor, cost)
 
         if self.ideology == "adaptive":
-            # conservative unless quite healthy
             return self.energy >= (cost + 8.0)
 
         return False
 
     def _maybe_repair_instant(self) -> bool:
-        """
-        If on a degraded renewable and ideology says yes, spend energy and repair instantly.
-        Returns True if we repaired (or moved to repair in this tick).
-        """
-        # If we're standing on a renewable, try to repair immediately
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch_here = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable"), None)
         if patch_here and (getattr(patch_here, "is_degraded", False) or getattr(patch_here, "degraded", False)) and self._should_repair(patch_here):
             cost = getattr(self.model, "repair_energy_cost", 10.0)
             if self.energy >= cost:
                 self.energy -= cost
-                # clear flags
                 if hasattr(patch_here, "clear_degraded"):
                     patch_here.clear_degraded()
                 else:
@@ -492,7 +443,7 @@ class IdeologyAgent(Agent):
                 patch_here.amount = max(patch_here.amount, int(0.5 * patch_here.max_capacity))
                 return True
 
-        # If not on one, optionally move toward closest degraded if we intend to repair
+
         target_pos, dist, patch = self._nearest_degraded_patch()
         if patch is None:
             return False
@@ -501,12 +452,11 @@ class IdeologyAgent(Agent):
 
         if self.pos != target_pos:
             self.move_towards(target_pos, speed=1)
-            return True  # took our action this tick (movement toward repair)
+            return True
         return False
 
-    # ---------- RL helpers (Adaptive) ----------
+    #RL
     def _expected_net_here(self, p) -> float:
-        """Expected one-burst net on current tile, including setup if unpaid."""
         if p is None:
             return -999.0
         setup_due  = (p.resource_type == "renewable") and (p.unique_id not in self.renewable_setup_paid)
@@ -519,24 +469,20 @@ class IdeologyAgent(Agent):
         return take - op_cost - setup_cost
 
     def _state_from_obs(self) -> tuple:
-        """
-        Compact, discrete state for tabular Q-learning.
-        Now also encodes: expected net yield on this tile, and global nonrenewable scarcity.
-        """
-        # ---- energy bin
+
+        # energy bin
         e = self.energy
         if e <= 3: e_bin = 0
         elif e <= 7: e_bin = 1
         elif e <= 12: e_bin = 2
         else: e_bin = 3
 
-        # ---- what's under my feet?
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
         hub_here = any(getattr(o, "built", False) for o in cell if isinstance(o, EnergyHub))
 
         if patch is None:
-            tile_type = 0      # empty
+            tile_type = 0      
             amt_bin = 0
             scar_bin = 0
             degraded = 0
@@ -568,11 +514,10 @@ class IdeologyAgent(Agent):
                 or getattr(patch, "is_degraded", False)
             ) else 0
 
-        # ---- coarse distances to nearest renewable / nonrenewable
         def dist_bin_to(rtype: str):
             pos, d, p = self._nearest_patch(rtype)
             if p is None:
-                return 3  # none/very far
+                return 3  
             if d == 0: return 0
             if d <= 3: return 1
             if d <= 8: return 2
@@ -581,7 +526,6 @@ class IdeologyAgent(Agent):
         d_ren = dist_bin_to("renewable")
         d_non = dist_bin_to("nonrenewable")
 
-        # ---- expected net if we mine HERE now (includes setup if unpaid)
         exp_net = self._expected_net_here(patch)
         if exp_net <= -2:   net_bin = 0
         elif exp_net <= 0:  net_bin = 1
@@ -589,14 +533,12 @@ class IdeologyAgent(Agent):
         elif exp_net <= 4:  net_bin = 3
         else:               net_bin = 4
 
-        # ---- global scarcity of nonrenewables
         non_count = len(self.model.nonrenewable_locations)
         if non_count == 0:        non_bin = 0
         elif non_count <= 30:     non_bin = 1
         elif non_count <= 70:     non_bin = 2
         else:                     non_bin = 3
 
-        # return the extended state
         return (
             e_bin, tile_type, amt_bin, scar_bin, degraded, int(hub_here),
             d_ren, d_non, net_bin, non_bin
@@ -612,11 +554,9 @@ class IdeologyAgent(Agent):
         return self.model.shared_q_table[state]
 
     def _choose_action(self, state: tuple) -> str:
-        # epsilon-greedy
         if random.random() < self.rl_epsilon:
             return random.choice(self.RL_ACTIONS)
         row = self._qrow(state)
-        # argmax with deterministic tie-break
         return max(self.RL_ACTIONS, key=lambda a: row[a])
 
     def _best_q(self, state: tuple) -> float:
@@ -628,11 +568,10 @@ class IdeologyAgent(Agent):
         td_target = r + self.rl_gamma * self._best_q(s2)
         row[a] += self.rl_alpha * (td_target - row[a])
 
-    # --- Survival-first reward for the ADAPTIVE agent ---
+
     def _calc_reward(self, action, pre_e, post_e, patch=None):
         reward = 0.0
-
-        # Survival reward
+        # Big penalty for death
         reward += 1.0 if post_e > 0 else -3.0
 
         # Positive feedback for energy gains
@@ -650,13 +589,12 @@ class IdeologyAgent(Agent):
         return reward
 
 
-    # ---------- CAPITALIST ----------
+    # CAPITALIST
     def capitalist_step(self) -> None:
         # maintenance first
         if self._maybe_repair_instant():
             return
 
-        # Continue mining if already engaged
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
@@ -794,7 +732,6 @@ class IdeologyAgent(Agent):
             speed = 2 if self.energy > 15 else 1
             self.move_towards(best_patch_pos, speed=speed)
             if self.pos == best_patch_pos:
-                # try repair if this is a degraded renewable
                 if self._maybe_repair_instant():
                     return
                 self.mining = True
@@ -802,9 +739,8 @@ class IdeologyAgent(Agent):
                 resources_here = [o for o in self.model.grid.get_cell_list_contents([self.pos]) if isinstance(o, ResourcePatch)]
                 self.mining_target = resources_here[0] if resources_here else None
 
-    # ---------- SOCIALIST ----------
+    # soci
     def socialist_step(self) -> None:
-        # maintenance first
         if self._maybe_repair_instant():
             return
 
@@ -848,7 +784,6 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                    # Safe tithe + wealth cap using pool_floor as guard
                     floor = getattr(self.model, "pool_floor", 10.0)
                     if net_gain > 0 and self.energy > floor:
                         tithe = self.model.tithe_rate * net_gain
@@ -890,7 +825,6 @@ class IdeologyAgent(Agent):
         if target:
             self.move_towards(target, speed=1)
             if self.pos == target:
-                # repair if needed, otherwise hub/mine
                 if self._maybe_repair_instant():
                     return
                 self._maybe_build_hub_or_mine()
@@ -901,7 +835,7 @@ class IdeologyAgent(Agent):
     
     
 
-    # ---------- GREEN CAPITALIST ----------
+    # greenc cap
     def capitalist_green_step(self):
         if self._maybe_repair_instant():
             return
@@ -987,7 +921,7 @@ class IdeologyAgent(Agent):
         else:
             self.idle_wander()
 
-    # ---------- GREEN SOCIALIST ----------
+    # green scocialist
     def socialist_green_step(self):
         if self._maybe_repair_instant():
             return
@@ -1033,7 +967,6 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                    # Redistribution + cap guarded by pool_floor
                     floor = getattr(self.model, "pool_floor", 10.0)
                     if net_gain > 0 and self.energy > floor:
                         tithe = self.model.tithe_rate * net_gain
@@ -1083,20 +1016,14 @@ class IdeologyAgent(Agent):
             self.redistribute_to_neighbors()
 
     def _pool_first_contribute(self, net_gain: float):
-        """
-        Push almost everything above a small keep floor into the community pool first,
-        then (optionally) top up nearby needy agents.
-        """
         floor = getattr(self.model, "pool_floor", 10.0)
         if net_gain > 0 and self.energy > floor:
-            # tithe on net gain (pool-first)
             tithe = self.model.tithe_rate * net_gain
             tithe = min(tithe, max(0.0, self.energy - floor))
             if tithe > 0:
                 self.energy -= tithe
                 self.model.community_pool += tithe
 
-        # hard personal cap -> skim to pool
         safe_cap = max(self.energy_cap, floor)
         if self.energy > safe_cap:
             skim = max(0.0, self.energy - safe_cap)
@@ -1104,17 +1031,13 @@ class IdeologyAgent(Agent):
                 self.energy -= skim
                 self.model.community_pool += skim
 
-        # (Optional) after securing pool, do small neighbour top-ups
-        # if the pool is already healthy.
         if self.model.community_pool > floor and self.energy > (self.min_keep + 6):
             self.redistribute_to_neighbors()
 
     def communist_step(self) -> None:
-        # 1) Repair first (aggressive: if we can afford it, do it)
         if self._maybe_repair_instant():
             return
 
-        # 2) Resolve ongoing mining bursts (reuse socialist cadence)
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
@@ -1159,24 +1082,20 @@ class IdeologyAgent(Agent):
                         except ValueError:
                             pass
 
-                    # POOL-FIRST contribution + strict personal cap
+
                     self._pool_first_contribute(net_gain)
 
                 self.mining = False
                 self.mining_target = None
             return
 
-        # 3) Choose target with collective criteria
         avg_e = self.model.average_energy()
         pool_low = (self.model.community_pool < self.model.pool_floor)
 
-        # Very strong renewable preference; only go to nonrenewables if collective is struggling
         target_type = "renewable"
         if pool_low or avg_e <= 5.0:
-            # allow nonrenewables if collective is under stress
             target_type = "nonrenewable" if random.random() < 0.5 else "renewable"
 
-        # If personally in emergency, head to nearest usable patch (any type)
         if self.energy < self.emergency_floor:
             pos_r, dr, pr = self._nearest_patch("renewable")
             pos_n, dn, pn = self._nearest_patch("nonrenewable")
@@ -1192,29 +1111,18 @@ class IdeologyAgent(Agent):
                     self.idle_wander(); return
             target = pos_p
 
-        # 4) Move and act (build hub on renewables, otherwise mine)
         if target:
             self.move_towards(target, speed=1)
             if self.pos == target:
                 if self._maybe_repair_instant():
                     return
                 self._maybe_build_hub_or_mine()
-                # pool-first after we eventually finish the mine burst (handled above)
 
     def communist_green_step(self) -> None:
-        """
-        Eco-strict variant:
-        - Never mine nonrenewables
-        - Same pool-first, strict cap
-        - Avoid high-scar renewables (let them heal; repair when possible)
-        """
-        # Repair first
         if self._maybe_repair_instant():
             return
 
-        # Finish ongoing burst
         if self.mining:
-            # identical to communist_step end-of-burst, then pool-first:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
                 cell = self.model.grid.get_cell_list_contents([self.pos])
@@ -1249,11 +1157,9 @@ class IdeologyAgent(Agent):
             patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == "renewable" and o.amount > 0), None)
             if not patch:
                 continue
-            # avoid crowded tile
             if any(isinstance(a, IdeologyAgent) for a in cell):
                 continue
             scar = getattr(patch, "scar_level", 0.0)
-            # prefer lower scar
             score = (self.model.yield_per_mine_renewable - self.model.cost_extract_renewable) - 0.5 * scar
             d = self.manhattan_distance(self.pos, pos)
             score /= (d + 1)
@@ -1270,23 +1176,18 @@ class IdeologyAgent(Agent):
             self.idle_wander()
 
     def adaptive_dqn_step(self) -> None:
-        """
-        DQN-driven adaptive policy. Lazy-inits the shared DQN the first time we step,
-        when self.pos is valid and _state_from_obs() is safe to call.
-        """
-        # ---------- 0) Lazy DQN init ----------
+
         if not hasattr(self.model, "dqn"):
-            s0 = self._state_from_obs()                     # safe now: agent is placed
+            s0 = self._state_from_obs()                    
             state_dim = len(self._vec_from_state(s0))
 
-            # shared discrete action set
             self.model.dqn_actions = ["idle","move_N","move_S","move_E","move_W","mine","repair"]
 
             cfg = DQNConfig(
                 state_dim=state_dim,
                 n_actions=len(self.model.dqn_actions),
                 lr=1e-3,
-                gamma=self.rl_gamma,        # keep your existing gamma (0.95)
+                gamma=self.rl_gamma,        
                 batch_size=64,
                 buffer_size=100_000,
                 start_learning=1_000,
@@ -1294,48 +1195,30 @@ class IdeologyAgent(Agent):
                 double_q=True,
             )
             self.model.dqn = DQN(cfg)
-            self.model.dqn_eps = self.rl_epsilon          # share epsilon across adaptive agents
+            self.model.dqn_eps = self.rl_epsilon         
             self.model.dqn_global_step = 0
 
-        # ---------- 1) Build current state vector ----------
+ 
         s = self._state_from_obs()
         s_vec = self._vec_from_state(s)
         successful_mine = False
         gained_amount = 0.0
         successful_repair = False
 
-        # ---------- 2) Pick action ----------
-        # ε-greedy DQN action selection (with optional external override)
         eps = getattr(self.model, "dqn_eps", 0.10)
 
-        # Prefer external action if provided (e.g. from Stable-Baselines wrapper)
         if hasattr(self.model, "external_action_idx") and self.model.external_action_idx is not None:
             a_idx = int(self.model.external_action_idx)
-            self.model.external_action_idx = None  # consume it so other agents can't reuse
+            self.model.external_action_idx = None 
         else:
             eps = getattr(self.model, "dqn_eps", self.rl_epsilon)
             a_idx = self.model.dqn.act(s_vec, eps)
 
-        # Map index → action name
-        actions = self.model.dqn_actions  # ["idle","move_N","move_S","move_E","move_W","mine","repair"]
+
+        actions = self.model.dqn_actions 
         a = actions[a_idx]
 
-        # basic safety: if very low energy, bias toward mining
-        #if self.energy <= 5.0 and a not in ("move_N","move_S","move_E","move_W","mine"):
-            #a = "mine"
 
-        # If we can mine here and net positive (or emergency), prefer "mine"
-        '''try:
-            if self._usable_here():
-                cell = self.model.grid.get_cell_list_contents([self.pos])
-                patch_here = next((o for o in cell if isinstance(o, ResourcePatch)), None)
-                if patch_here is not None:
-                    if self._expected_net_here(patch_here) > 0 or self.energy <= self.emergency_floor + 1:
-                        a = "mine"
-        except Exception:
-            pass'''
-
-        # ---------- 3) Execute one tick of the chosen action ----------
         energy_before = self.energy
 
         if a.startswith("move_"):
@@ -1364,7 +1247,7 @@ class IdeologyAgent(Agent):
                     self.mining_counter = getattr(self, "adaptive_mine_ticks", 3)
                     self.mining_target = patch
 
-                    # resolve one tick of mining immediately (1/3 of a burst)
+
                     desired = self.model.yield_per_mine_renewable if patch.resource_type == "renewable" else self.model.yield_per_mine_nonrenewable
                     op_cost = self.model.cost_extract_renewable if patch.resource_type == "renewable" else self.model.cost_extract_nonrenewable
                     gained = patch.harvest(desired)
@@ -1399,7 +1282,7 @@ class IdeologyAgent(Agent):
                         except ValueError:
                             pass
 
-                    # the rest of the burst will continue on subsequent ticks
+
                     self.mining_counter -= 1
                     if self.mining_counter <= 0:
                         self.mining = False
@@ -1419,7 +1302,6 @@ class IdeologyAgent(Agent):
                         patch.degraded = False
                         patch.under_maintenance = False
 
-        # ---------- 4) Upkeep, death, reward ----------
         UPCOMING_UPKEEP = 0.3
         DEATH_PEN = -3.0
         SHAPING_K = 0.1
@@ -1441,15 +1323,15 @@ class IdeologyAgent(Agent):
         dE = (self.energy - energy_before+UPCOMING_UPKEEP)
         r = survive_bonus + SHAPING_K * dE
 
-        # small event bonuses
+  
         if successful_mine:
             r += 0.05 * gained_amount
         if successful_repair:
             r += 0.5
         self.last_reward = float(r)
 
-        # ---------- 5) Next state & learn ----------
-        s2 = self._state_from_obs() if not done else s  # if dead, s2 won’t be used after not_done=0
+  
+        s2 = self._state_from_obs() if not done else s  
         s2_vec = self._vec_from_state(s2)
         self.model.dqn.push(s_vec, actions.index(a), float(r), s2_vec, done)
 
@@ -1463,19 +1345,14 @@ class IdeologyAgent(Agent):
         self.model.dqn_steps = int(getattr(self.model, "dqn_steps", 0)) + 1
 
 
-        # ---------- 6) Epsilon decay & occasional save ----------
         self.model.dqn_eps = max(self.rl_epsilon_min, self.model.dqn_eps * self.rl_epsilon_decay)
         if (self.model.dqn_global_step % 5000) == 0:
             self.model.dqn.save()
 
 
-    # ---------- Adaptive (Tabular Q-learning; time-survival reward) ----------
+
     def adaptive_step(self) -> None:
-        """
-        Reward = 1 for each tick survived (i.e., if energy after NEXT upkeep > 0),
-        0 on the tick before death (plus small death penalty).
-        SMDP update for multi-tick mining bursts.
-        """
+        
         UPCOMING_UPKEEP = 0.3
         USE_DEATH_PENALTY = True
         DEATH_PENALTY = -3.0
@@ -1484,31 +1361,24 @@ class IdeologyAgent(Agent):
             will_survive = (self.energy - UPCOMING_UPKEEP) > 0
             return 1.0 if will_survive else (0.0 + (DEATH_PENALTY if USE_DEATH_PENALTY else 0.0))
 
-        # ----------------------------
-        # 1) Resolve ongoing mining (accumulate discounted rewards per tick)
-        # ----------------------------
+
         if self.mining:
-            # accumulate survival reward for this mining tick
             self._mine_k += 1
             self._mine_accum_r += (self.rl_gamma ** (self._mine_k - 1)) * survival_reward()
 
-            # finish burst?
             self.mining_counter -= 1
             if self.mining_counter <= 0:
                 cell = self.model.grid.get_cell_list_contents([self.pos])
                 patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
 
                 if patch:
-                    # pay renewable setup once if needed
                     if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
                         if self.energy >= self.model.cost_renewable_setup:
                             self.energy -= self.model.cost_renewable_setup
                             self.renewable_setup_paid.add(patch.unique_id)
                         else:
-                            # couldn't pay; abort mining (still do SMDP update below)
                             pass
 
-                    # do the actual harvest (if setup OK or nonrenewable)
                     if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
                         if patch.resource_type == "renewable":
                             desired = self.model.yield_per_mine_renewable
@@ -1523,7 +1393,6 @@ class IdeologyAgent(Agent):
                         if net > 0:
                             self.total_collected_energy += net
 
-                        # remove depleted nonrenewable
                         if patch.amount <= 0 and patch.resource_type == "nonrenewable":
                             try:
                                 self.model.grid.remove_agent(patch)
@@ -1536,7 +1405,6 @@ class IdeologyAgent(Agent):
                             except ValueError:
                                 pass
 
-                # SMDP Q-update for the staged (state, "mine")
                 if self._last_state is not None and self._last_action is not None:
                     s2 = self._state_from_obs()
                     k  = max(1, self._mine_k)
@@ -1552,9 +1420,7 @@ class IdeologyAgent(Agent):
                 self._mine_accum_r = 0.0
             return
 
-        # -----------------------------------
-        # 2) Emergency: go to nearest positive-net patch (R or NR)
-        # -----------------------------------
+
         if self.energy <= max(self.emergency_floor, 6.0):
             candidates = []
             for rtype in ("nonrenewable", "renewable"):
@@ -1571,7 +1437,6 @@ class IdeologyAgent(Agent):
                 if self.pos != pos:
                     self.move_towards(pos, speed=2)
                     return
-                # start short mining burst; stage SMDP update on completion
                 self.mining = True
                 self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
                 self.mining_target = patch
@@ -1581,9 +1446,7 @@ class IdeologyAgent(Agent):
                 self._mine_accum_r = 0.0
                 return
 
-        # ----------------------------
-        # 3) Normal RL step
-        # ----------------------------
+
         s = self._state_from_obs()
 
         low_energy = (self.energy <= 5.0)
@@ -1603,7 +1466,7 @@ class IdeologyAgent(Agent):
                 best = [x for x in action_space if row[x] == maxv]
                 a = random.choice(best)
 
-        # If we’re already on a usable patch, mine only if net>0 (or emergency buffer)
+
         if self._usable_here():
             cell = self.model.grid.get_cell_list_contents([self.pos])
             patch_here = next((o for o in cell if isinstance(o, ResourcePatch)), None)
@@ -1626,16 +1489,15 @@ class IdeologyAgent(Agent):
             if patch and not getattr(patch, "degraded", False) and not getattr(patch, "under_maintenance", False) \
                and not getattr(patch, "is_degraded", False) and patch.amount > 0:
 
-                # handle renewable setup up front
                 if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
                     setup = self.model.cost_renewable_setup
                     if self.energy < setup:
-                        pass  # can't start yet; fall through to update below
+                        pass  
                     else:
                         self.energy -= setup
                         self.renewable_setup_paid.add(patch.unique_id)
 
-                # start burst if allowed
+
                 if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
                     self.mining = True
                     self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
@@ -1644,7 +1506,7 @@ class IdeologyAgent(Agent):
                     self._mine_k = 0
                     self._mine_accum_r = 0.0
                     return
-            # else: invalid mine attempt; we’ll just update below
+
 
         elif a == "repair":
             if self.energy >= 18.0:
@@ -1659,7 +1521,7 @@ class IdeologyAgent(Agent):
                         patch.degraded = False
                         patch.under_maintenance = False
 
-        # 1-step Q-learning update with survival reward
+
         s2 = self._state_from_obs()
         r = survival_reward()
         self._update_q(s, a, r, s2)
@@ -1668,20 +1530,12 @@ class IdeologyAgent(Agent):
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
 
-        if self.model.step_count % 500 == 0:  # every 500 steps
+        if self.model.step_count % 500 == 0:
             with open(f"qtable_{self.ideology}.pkl", "wb") as f:
                 pickle.dump(self.model.shared_q_table, f)
 
     def adaptive_direct_step(self) -> None:
-        """
-        Simpler RL: actions are high-level choices:
-        - goto_nearest_non: move one step toward the closest usable nonrenewable
-        - goto_nearest_ren: move one step toward the closest usable renewable
-        - mine: begin/continue a short mining burst if possible
-        - repair: repair a degraded renewable if on it (when healthy enough)
 
-        Reward = 1 per tick survived (energy after next upkeep > 0), else 0 (with small death penalty).
-        """
         UPCOMING_UPKEEP = 0.3
         USE_DEATH_PENALTY = True
         DEATH_PENALTY = -3.0
@@ -1689,7 +1543,7 @@ class IdeologyAgent(Agent):
         def survival_reward():
             return 1.0 if (self.energy - UPCOMING_UPKEEP) > 0 else (0.0 + (-3.0 if USE_DEATH_PENALTY else 0.0))
 
-        # 1) Resolve ongoing mining bursts (same as adaptive)
+
         if self.mining:
             self.mining_counter -= 1
             if self.mining_counter <= 0:
@@ -1697,16 +1551,13 @@ class IdeologyAgent(Agent):
                 patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
 
                 if patch:
-                    # one-time renewable setup
                     if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
                         if self.energy >= self.model.cost_renewable_setup:
                             self.energy -= self.model.cost_renewable_setup
                             self.renewable_setup_paid.add(patch.unique_id)
                         else:
-                            # abort burst; still do the Q update below
                             pass
 
-                    # do harvest
                     if patch.resource_type == "renewable":
                         desired = self.model.yield_per_mine_renewable
                         op_cost = self.model.cost_extract_renewable
@@ -1720,7 +1571,6 @@ class IdeologyAgent(Agent):
                     if net > 0:
                         self.total_collected_energy += net
 
-                    # remove empty nonrenewable
                     if patch.amount <= 0 and patch.resource_type == "nonrenewable":
                         try:
                             self.model.grid.remove_agent(patch)
@@ -1733,7 +1583,6 @@ class IdeologyAgent(Agent):
                         except ValueError:
                             pass
 
-                # Q update for previously staged (s,"mine")
                 if self._last_state is not None and self._last_action is not None:
                     s2 = self._state_from_obs()
                     r = survival_reward()
@@ -1744,9 +1593,7 @@ class IdeologyAgent(Agent):
                 self.mining_target = None
             return
 
-        # 2) Emergency: beeline toward usable energy if very low
         if self.energy <= max(self.emergency_floor, 6.0):
-            # prefer nonrenewable first for immediate yield
             pos_n, _, pn = self._nearest_patch("nonrenewable")
             tgt_pos, tgt_patch = (pos_n, pn) if (pn and pn.amount > 0) else (None, None)
             if tgt_patch is None:
@@ -1758,7 +1605,6 @@ class IdeologyAgent(Agent):
                 if self.pos != tgt_pos:
                     self.move_towards(tgt_pos, speed=2)
                     return
-                # start a short burst
                 self.mining = True
                 self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
                 self.mining_target = tgt_patch
@@ -1766,10 +1612,8 @@ class IdeologyAgent(Agent):
                 self._last_action = "mine"
                 return
 
-        # 3) RL choose among the 4 actions
         s = self._state_from_obs()
 
-        # ε-greedy on limited action set
         if random.random() < self.rl_epsilon:
             a = random.choice(self.RL_ACTIONS)
         else:
@@ -1778,11 +1622,10 @@ class IdeologyAgent(Agent):
             best = [x for x in self.RL_ACTIONS if row[x] == bestv]
             a = random.choice(best)
 
-        # If we can actually mine here, override to "mine"
         if self._usable_here():
             a = "mine"
 
-        # Execute the chosen action
+
         if a == "goto_nearest_non":
             pos, _, patch = self._nearest_patch("nonrenewable")
             if patch is not None and pos is not None and pos != self.pos:
@@ -1802,7 +1645,6 @@ class IdeologyAgent(Agent):
                     if self.energy >= setup:
                         self.energy -= setup
                         self.renewable_setup_paid.add(patch.unique_id)
-                # start the burst only if setup is paid or not needed
                 if (patch.resource_type != "renewable") or (patch.unique_id in self.renewable_setup_paid):
                     self.mining = True
                     self.mining_counter = getattr(self, "adaptive_mine_ticks", 2)
@@ -1823,23 +1665,20 @@ class IdeologyAgent(Agent):
                         patch.degraded = False
                         patch.under_maintenance = False
 
-        # Q update (survival-only reward)
         s2 = self._state_from_obs()
         r = survival_reward()
         self._update_q(s, a, r, s2)
 
-        # ε decay
         if self.rl_epsilon > self.rl_epsilon_min:
             self.rl_epsilon = max(self.rl_epsilon_min, self.rl_epsilon * self.rl_epsilon_decay)
 
-        if self.model.step_count % 500 == 0:  # every 500 steps
+        if self.model.step_count % 500 == 0:  
             with open(f"qtable_{self.ideology}.pkl", "wb") as f:
                 pickle.dump(self.model.shared_q_table, f)
 
 
     
     def _usable_here(self) -> bool:
-        """True if the tile underfoot can be mined right now."""
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
         if not patch:
@@ -1850,21 +1689,18 @@ class IdeologyAgent(Agent):
             or getattr(patch, "under_maintenance", False)
             or getattr(patch, "is_degraded", False)):
             return False
-        # renewable requires setup paid or affordable now
         if patch.resource_type == "renewable" and patch.unique_id not in self.renewable_setup_paid:
             if self.energy < self.model.cost_renewable_setup:
                 return False
         return True
 
     def _nearest_usable_patch_any(self):
-        """Nearest patch we can ACTUALLY exploit now (filters: amount>0, not degraded, setup affordable, not crowded)."""
         best = (None, 10**9, None)
         for rtype, locs in (("renewable", self.model.renewable_locations),
                             ("nonrenewable", self.model.nonrenewable_locations)):
             for pos in list(locs):
                 cell = self.model.grid.get_cell_list_contents([pos])
 
-                # skip if another agent is already standing there
                 if any(isinstance(a, IdeologyAgent) and a is not self for a in cell):
                     continue
 
@@ -1874,25 +1710,22 @@ class IdeologyAgent(Agent):
                 if getattr(patch, "amount", 0) <= 0:
                     continue
 
-                # renewable must be usable now
                 if rtype == "renewable":
                     if (getattr(patch, "degraded", False)
                         or getattr(patch, "under_maintenance", False)
                         or getattr(patch, "is_degraded", False)):
                         continue
-                    # require setup affordable OR already paid
                     if patch.unique_id not in self.renewable_setup_paid and self.energy < self.model.cost_renewable_setup:
                         continue
 
                 d = self.manhattan_distance(self.pos, pos)
                 if rtype == "renewable":
-                    d = max(0, d - self.renewable_bias)  # adaptive can set this to 0
+                    d = max(0, d - self.renewable_bias)  
                 if d < best[1]:
                     best = (pos, d, patch)
         return best
 
     def _heuristic_best_action(self, allow_idle: bool, low_energy: bool) -> str:
-        """Heuristic fallback: mine if standing on a usable patch, else step toward nearest usable patch."""
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
         usable_here = (
@@ -1903,7 +1736,6 @@ class IdeologyAgent(Agent):
                 or (patch.unique_id in self.renewable_setup_paid or self.energy >= self.model.cost_renewable_setup))
         )
         if usable_here:
-            # Only mine if it’s actually good (or you’re desperate)
             if self._expected_net_here(patch) > 0 or self.energy <= self.emergency_floor + 1:
                 return "mine"
 
@@ -1918,7 +1750,6 @@ class IdeologyAgent(Agent):
 
         return "idle" if allow_idle and not low_energy else random.choice(["move_N", "move_S", "move_E", "move_W"])
 
-    # ---------- helpers ----------
     def _maybe_build_hub_or_mine(self):
         cell = self.model.grid.get_cell_list_contents([self.pos])
         patch = next((o for o in cell if isinstance(o, ResourcePatch)), None)
@@ -1992,13 +1823,11 @@ class IdeologyAgent(Agent):
             dy = ty - y
             if dx == 0 and dy == 0:
                 break
-            # move along the dominant axis ONLY (Manhattan step)
             if abs(dx) >= abs(dy):
                 nx, ny = x + (1 if dx > 0 else -1 if dx < 0 else 0), y
             else:
                 nx, ny = x, y + (1 if dy > 0 else -1 if dy < 0 else 0)
 
-            # wrap if torus, else stop at boundary
             if getattr(self.model.grid, "torus", False):
                 nx %= self.model.width
                 ny %= self.model.height
@@ -2019,7 +1848,7 @@ class IdeologyAgent(Agent):
             patch = next((o for o in cell if isinstance(o, ResourcePatch) and o.resource_type == rtype and o.amount > 0), None)
             if not patch:
                 continue
-            # avoid crowding: skip if an agent stands here already
+
             if any(isinstance(a, IdeologyAgent) for a in cell):
                 continue
             d = self.manhattan_distance(self.pos, pos)
