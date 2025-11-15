@@ -5,4 +5,4 @@ python main.py
 deactivate
 python batch_runner.py --ideology adaptive_direct --runs 10 --steps 300 --out_prefix exp1
 python batch_runner.py --ideology adaptive --steps 1000 --runs 10 --seed 42 --num_agents 15 --renewables_regenerate 1 --out_prefix results
-python train_sb3_dqn.py
+

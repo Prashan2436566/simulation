@@ -1,5 +1,3 @@
-# sb3_shared_policy.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass

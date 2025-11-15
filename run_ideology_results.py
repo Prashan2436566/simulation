@@ -1,4 +1,3 @@
-#python run_ideology_results.py --steps 1500 --seeds 10 --agents 15 --width 30 --height 30 --out results_ideologies_10runs
 import os
 import argparse
 import numpy as np
@@ -57,7 +56,6 @@ def run_one(ideology: str, steps: int, width: int, height: int, num_agents: int,
             if hasattr(a, "energy"):
                 ages[a.unique_id] = ages.get(a.unique_id, 0) + 1
 
-    # Collect reporters
     df_ts = model.datacollector.get_model_vars_dataframe()
 
     for col in TS_METRICS:
