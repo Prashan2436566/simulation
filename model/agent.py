@@ -265,8 +265,16 @@ class IdeologyAgent(Agent):
         elif self.ideology == "green_socialist":
             self.socialist_green_step()
         elif self.ideology == "adaptive":
-            #self.adaptive_step()
-            self.adaptive_dqn_step()
+            # If the Mesa model has an attached SB3SharedPolicy,
+            # use it as a shared MARL policy across all adaptive agents.
+            if getattr(self.model, "shared_policy", None) is not None:
+                self.adaptive_sb3_shared_step()
+            else:
+                # Fallback to the original in-simulation DQN
+                # or whatever you were using before.
+                # self.adaptive_step()
+                self.adaptive_dqn_step()
+
         elif self.ideology == "adaptive_direct":
             self.adaptive_direct_step()
         elif self.ideology == "communist":
@@ -1350,6 +1358,169 @@ class IdeologyAgent(Agent):
             self.model.dqn.save()
 
 
+    def adaptive_sb3_shared_step(self) -> None:
+        if not hasattr(self.model, "shared_policy") or self.model.shared_policy is None:
+            self.idle_wander()
+            self.last_reward = 0.0
+            return
+
+        # State -> vector
+        s = self._state_from_obs()
+        s_vec = self._vec_from_state(s)
+
+        successful_mine = False
+        gained_amount = 0.0
+        successful_repair = False
+
+        if hasattr(self.model, "dqn_actions"):
+            actions = list(self.model.dqn_actions)
+        else:
+            actions = ["idle", "move_N", "move_S", "move_E", "move_W", "mine", "repair"]
+
+        try:
+            a_idx = int(self.model.shared_policy.act(s_vec))
+        except Exception:
+            a_idx = random.randrange(len(actions))
+
+        a_idx = max(0, min(a_idx, len(actions) - 1))
+        a = actions[a_idx]
+
+        energy_before = self.energy
+
+        if a.startswith("move_"):
+            dx, dy = 0, 0
+            if a == "move_N":
+                dy = -1
+            elif a == "move_S":
+                dy = 1
+            elif a == "move_E":
+                dx = 1
+            elif a == "move_W":
+                dx = -1
+
+            new_x = min(max(self.pos[0] + dx, 0), self.model.width - 1)
+            new_y = min(max(self.pos[1] + dy, 0), self.model.height - 1)
+            self.model.grid.move_agent(self, (new_x, new_y))
+
+        elif a == "mine":
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch = next(
+                (o for o in cell if isinstance(o, ResourcePatch)),
+                None,
+            )
+
+            if patch and getattr(patch, "amount", 0) > 0:
+                degraded = (
+                    getattr(patch, "degraded", False)
+                    or getattr(patch, "under_maintenance", False)
+                    or getattr(patch, "is_degraded", False)
+                )
+                if not degraded:
+                    if (
+                        patch.resource_type == "renewable"
+                        and patch.unique_id not in self.renewable_setup_paid
+                    ):
+                        setup = self.model.cost_renewable_setup
+                        if self.energy >= setup:
+                            self.energy -= setup
+                            self.renewable_setup_paid.add(patch.unique_id)
+                        else:
+                            patch = None
+
+                    if patch is not None and (
+                        patch.resource_type != "renewable"
+                        or patch.unique_id in self.renewable_setup_paid
+                    ):
+                        if patch.resource_type == "renewable":
+                            desired = self.model.yield_per_mine_renewable
+                            op_cost = self.model.cost_extract_renewable
+                        else:
+                            desired = self.model.yield_per_mine_nonrenewable
+                            op_cost = self.model.cost_extract_nonrenewable
+
+                        if self.energy >= op_cost:
+                            self.energy -= op_cost
+                            gained = min(desired, patch.amount)
+                            patch.amount -= gained
+                            net = gained
+                            self.energy += net
+                            successful_mine = True
+                            gained_amount = float(gained)
+
+                            if patch.resource_type == "renewable":
+                                self.model.mined_renewable_total += float(max(net, 0.0))
+                            else:
+                                self.model.mined_nonrenewable_total += float(max(net, 0.0))
+
+                            if patch.amount <= 0 and patch.resource_type == "nonrenewable":
+                                try:
+                                    self.model.grid.remove_agent(patch)
+                                    self.model.schedule.remove(patch)
+                                except Exception:
+                                    pass
+                                try:
+                                    if patch.pos in self.model.nonrenewable_locations:
+                                        self.model.nonrenewable_locations.remove(patch.pos)
+                                except ValueError:
+                                    pass
+
+        elif a == "repair":
+            cell = self.model.grid.get_cell_list_contents([self.pos])
+            patch = next(
+                (
+                    o
+                    for o in cell
+                    if isinstance(o, ResourcePatch)
+                    and o.resource_type == "renewable"
+                ),
+                None,
+            )
+            degraded = (
+                patch
+                and (
+                    getattr(patch, "degraded", False)
+                    or getattr(patch, "under_maintenance", False)
+                    or getattr(patch, "is_degraded", False)
+                )
+            )
+            if patch and degraded:
+                cost = getattr(self.model, "repair_energy_cost", 10.0)
+                if self.energy >= cost:
+                    self.energy -= cost
+                    if hasattr(patch, "clear_degraded"):
+                        patch.clear_degraded()
+                    else:
+                        patch.is_degraded = False
+                        patch.degraded = False
+                        patch.under_maintenance = False
+                    successful_repair = True
+
+        UPCOMING_UPKEEP = 0.3
+        DEATH_PEN = -3.0
+        SHAPING_K = 0.1
+
+        self.energy -= UPCOMING_UPKEEP
+        done = self.energy <= 0
+        if done:
+            self.energy = 0
+            try:
+                self.model.grid.remove_agent(self)
+                self.model.schedule.remove(self)
+                self.deaths += 1
+                self.episodes += 1
+            except Exception:
+                pass
+
+        survive_bonus = 1.0 if (self.energy > 0) else DEATH_PEN
+        dE = (self.energy - energy_before + UPCOMING_UPKEEP)
+        r = survive_bonus + SHAPING_K * dE
+
+        if successful_mine:
+            r += 0.05 * gained_amount
+        if successful_repair:
+            r += 0.5
+
+        self.last_reward = float(r)
 
     def adaptive_step(self) -> None:
         

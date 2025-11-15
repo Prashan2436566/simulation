@@ -1,56 +1,90 @@
-import os
+# sb3_shared_policy.py
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional, Tuple, Any
+
 import numpy as np
-from typing import Optional
+import gymnasium as gym
+from gymnasium import spaces
 
 from stable_baselines3 import DQN
 from stable_baselines3.common.vec_env import DummyVecEnv, VecNormalize
 
-from mesa_sb3_env import MesaSB3Env
+
+OBS_DIM = 10
+N_ACTIONS = 7     # idle, move_N, move_S, move_E, move_W, mine, repair
 
 
+class _DummyObsEnv(gym.Env):
+
+    metadata = {"render_modes": []}
+
+    def __init__(self):
+        super().__init__()
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32
+        )
+        self.action_space = spaces.Discrete(N_ACTIONS)
+
+    def reset(
+        self, *, seed: Optional[int] = None, options: Optional[dict] = None
+    ) -> Tuple[np.ndarray, dict]:
+        super().reset(seed=seed)
+        obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        return obs, {}
+
+    def step(
+        self, action: int
+    ) -> Tuple[np.ndarray, float, bool, bool, dict]:
+        obs = np.zeros(self.observation_space.shape, dtype=np.float32)
+        reward = 0.0
+        terminated = True
+        truncated = False
+        info: dict[str, Any] = {}
+        return obs, reward, terminated, truncated, info
+
+
+@dataclass
 class SB3SharedPolicy:
 
-    def __init__(
-        self,
-        model_path: str = "models/dqn_sb3_final.zip",
-        vecnorm_path: Optional[str] = "models/vecnorm.pkl",
-        width: int = 15,
-        height: int = 15,
-        num_agents: int = 15,
-        max_steps: int = 400,
-        device: str = "cpu",
-    ) -> None:
-        if not os.path.exists(model_path):
-            raise FileNotFoundError(f"SB3 model not found at: {model_path}")
+    model_path: str
+    vecnorm_path: Optional[str] = None
+    device: str = "auto"
+    deterministic: bool = True
 
-        self.model = DQN.load(model_path, device=device)
+    def __post_init__(self) -> None:
+        base_env = DummyVecEnv([lambda: _DummyObsEnv()])
 
-        self.vecnorm = None
-        if vecnorm_path is not None and os.path.exists(vecnorm_path):
-            dummy_env = DummyVecEnv(
-                [
-                    lambda: MesaSB3Env(
-                        width=width,
-                        height=height,
-                        num_agents=num_agents,
-                        max_steps=max_steps,
-                        seed=0,
-                    )
-                ]
+        if self.vecnorm_path is not None:
+            self.vecnorm: VecNormalize = VecNormalize.load(
+                self.vecnorm_path, base_env
             )
-            self.vecnorm = VecNormalize.load(vecnorm_path, dummy_env)
             self.vecnorm.training = False
             self.vecnorm.norm_reward = False
+            env_for_model = self.vecnorm
+        else:
+            self.vecnorm = None
+            env_for_model = base_env
 
-    def _maybe_normalize_obs(self, obs: np.ndarray) -> np.ndarray:
-        if self.vecnorm is None:
-            return obs
-        obs_batch = obs.reshape(1, -1)
-        norm = self.vecnorm.normalize_obs(obs_batch)
-        return norm[0]
+        self.model: DQN = DQN.load(
+            self.model_path,
+            env=env_for_model,
+            device=self.device,
+        )
 
     def act(self, obs: np.ndarray) -> int:
-        obs = np.asarray(obs, dtype=np.float32).reshape(-1)
-        obs = self._maybe_normalize_obs(obs)
-        action, _ = self.model.predict(obs.reshape(1, -1), deterministic=True)
+        obs_arr = np.asarray(obs, dtype=np.float32).reshape(1, -1)
+
+        if self.vecnorm is not None:
+            obs_arr = self.vecnorm.normalize_obs(obs_arr)
+
+        action, _ = self.model.predict(
+            obs_arr,
+            deterministic=self.deterministic,
+        )
+
+        if isinstance(action, np.ndarray):
+            return int(action[0])
         return int(action)

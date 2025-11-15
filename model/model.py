@@ -6,7 +6,8 @@ from mesa.datacollection import DataCollector
 import random
 
 from .agent import IdeologyAgent, ResourcePatch, EnergyHub
-from ..sb3_shared_policy import SB3SharedPolicy
+from sb3_shared_policy import SB3SharedPolicy
+from typing import Optional
 
 class LegendElement(TextElement):
     def render(self, model):
@@ -59,6 +60,7 @@ class IdeologyModel(Model):
         renewables_regenerate: bool = True,
         ideology: str = "capitalist",
         policy_enabled: bool = False,
+        shared_policy: Optional[SB3SharedPolicy] = None,
         # Economics
         cost_renewable_setup: float = 5.0,
         cost_extract_renewable: float = 1.0,
@@ -157,7 +159,7 @@ class IdeologyModel(Model):
         self.dqn_last_loss = float("nan")
         self.dqn_steps = 0
 
-
+        self.shared_policy: Optional[SB3SharedPolicy] = shared_policy
 
         # Spawn agents
         for _ in range(num_agents):
