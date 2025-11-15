@@ -265,14 +265,9 @@ class IdeologyAgent(Agent):
         elif self.ideology == "green_socialist":
             self.socialist_green_step()
         elif self.ideology == "adaptive":
-            # If the Mesa model has an attached SB3SharedPolicy,
-            # use it as a shared MARL policy across all adaptive agents.
             if getattr(self.model, "shared_policy", None) is not None:
                 self.adaptive_sb3_shared_step()
             else:
-                # Fallback to the original in-simulation DQN
-                # or whatever you were using before.
-                # self.adaptive_step()
                 self.adaptive_dqn_step()
 
         elif self.ideology == "adaptive_direct":
